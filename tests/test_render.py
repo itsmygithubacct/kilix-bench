@@ -115,12 +115,15 @@ class RenderSuiteTest(unittest.TestCase):
             enable_scroll=True)
         self.assertEqual(boxed["kind"], "rect")
         self.assertGreater(boxed["pixel_bytes"], 4 * 2 * 3)
+        strip_bytes = sum(rect[2] * rect[3] * 3 for rect in strips)
 
         _samples, hinted = _present(
             graphics, before, after, width, height, repeats=1, warmup=0,
             enable_scroll=True, damage=strips)
         self.assertEqual(hinted["kind"], "rect")
-        self.assertLess(hinted["pixel_bytes"], boxed["pixel_bytes"])
+        self.assertLessEqual(hinted["pixel_bytes"], boxed["pixel_bytes"])
+        self.assertLessEqual(boxed["pixel_bytes"], strip_bytes * 8)
+        self.assertEqual(hinted["pixel_bytes"], strip_bytes)
 
         dy = 2
         before, after = scrolled_frame(width, height, dy)

@@ -83,14 +83,15 @@ including the bytes it would write.
 
 Scroll detection runs only when the changed rectangle is at least a fifth of
 the frame, and it only accepts vertical motion. The window probe is larger
-than that fifth and moves sideways, so the presenter still uploads the
-bounding rectangle. `diff_window` is that same bounding rectangle.
-`diff_hint` is the two exposed strips. Naming those strips as damage uploads
-the strips. An inline frame is a zlib-compressed escape (`o=z`), chunked to
-fit the graphics protocol, so a flat frame's wire size is far below the raw
-RGB. A shared-memory frame carries a name. The stream samples turn off the
-presenter's warmup keyframe, so the timed call is the edit. `stream_full`
-still asks for a placement.
+than that fifth and moves sideways, so it is not a scroll. `diff_rects` keeps
+a clean column gap when a spare rectangle slot remains and the two pieces
+cover less than 85% of the box. `diff_window` and an unhinted present are then
+the two exposed strips. `diff_hint` names those strips as damage. An inline
+frame is a zlib-compressed escape (`o=z`), chunked to fit the graphics
+protocol, so a flat frame's wire size is far below the raw RGB. A shared-memory
+frame carries a name. The stream samples turn off the presenter's warmup
+keyframe, so the timed call is the edit. `stream_full` still asks for a
+placement.
 
 ## Tests
 
