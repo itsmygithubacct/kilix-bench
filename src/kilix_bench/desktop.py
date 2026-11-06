@@ -88,6 +88,8 @@ def _transmit_extra(kind, found, width, height, rects):
         rows = height
     elif kind == "rects":
         pixel = _rect_bytes(found or ())
+    elif kind == "move":
+        pixel = _rect_bytes(found[2] if found else ())
     else:
         rows = 0 if not found else int(found[1])
         pixel = width * rows * 3
@@ -178,19 +180,45 @@ def measure(args):
 
     clock_samples, clock_extra = _time(transmit_clock, args.repeats, args.warmup)
 
+    desk.render()
+    before_rect = (notepad.x, notepad.y, notepad.w, notepad.h)
     before_move = desk.fb.tobytes()
     notepad.x += 12
-    compose()
+    desk.add_damage(*before_rect)
+    desk.add_damage(notepad.x, notepad.y, notepad.w, notepad.h)
+    desk.render()
+    after_rect = (notepad.x, notepad.y, notepad.w, notepad.h)
     after_move = desk.fb.tobytes()
+    move = (before_rect, after_rect)
     move_rects = kilix_graphics.diff_rects(
         before_move, after_move, width, height)
 
     def transmit_move():
-        kind, found = desk_main.frame_transmit(
-            before_move, after_move, width, height)
+        kind, found = desk_main.frame_plan(
+            before_move, after_move, width, height, move=move)
         return _transmit_extra(kind, found, width, height, move_rects)
 
     move_samples, move_extra = _time(transmit_move, args.repeats, args.warmup)
+
+    def drag():
+        rect = (notepad.x, notepad.y, notepad.w, notepad.h)
+        notepad.x += 4
+        desk.add_damage(*rect)
+        desk.add_damage(notepad.x, notepad.y, notepad.w, notepad.h)
+        desk.render()
+
+    drag_samples, _ = _time(drag, args.repeats, args.warmup)
+    desk.draw_cursor = True
+    compose()
+
+    def pointer():
+        old = desk.mouse_pos
+        desk.mouse_pos = (old[0] + 5, old[1] + 3)
+        desk.add_damage(*desk._cursor_box(*old))
+        desk.add_damage(*desk._cursor_box(*desk.mouse_pos))
+        desk.render()
+
+    pointer_samples, _ = _time(pointer, args.repeats, args.warmup)
 
     class _Term:
         """Read and unlink shared-memory frames so the presenter can reuse slots."""
@@ -262,6 +290,12 @@ def measure(args):
         scenario("hover_title",
                  "Hit-test one move across a window title",
                  hover_samples),
+        with_fps(drag_samples, (
+            "compose_drag",
+            "Repaint the strips a window move exposes")),
+        with_fps(pointer_samples, (
+            "compose_pointer",
+            "Repaint the software cursor after a short move")),
         scenario("frame_tobytes",
                  "Copy the framebuffer to RGB bytes",
                  byte_samples, {"bytes": width * height * 3}),

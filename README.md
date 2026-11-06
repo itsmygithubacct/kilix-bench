@@ -40,17 +40,21 @@ and the machine type. It does not record local paths.
 | `compose_apps` | The same redraw with Notepad, Calculator, and Settings open |
 | `compose_cursor` | That redraw plus the software cursor |
 | `hover_title` | One mouse move across a title bar |
+| `compose_drag` | Repainting the strips a window move exposes |
+| `compose_pointer` | Repainting the software cursor after a short move |
 | `frame_tobytes` | Copying the framebuffer to RGB bytes |
 | `transmit_unchanged` | The desktop send decision for an identical frame |
 | `transmit_clock` | A one-pixel taskbar change, using the desktop send decision |
 | `transmit_move` | A window moved 12 pixels |
 | `presenter_clock` | `FramePresenter` encoding that taskbar change |
 
-The desktop asks `diff_rects` for the changed rectangles and sends those.
-A change larger than 65% of the frame is still a full placement. The
-presenter rectangle count is that same library call, counted once outside
-the timed samples. `presenter_clock` is the presenter's own encode of the
-taskbar change, including the bytes it would write.
+The desktop asks `diff_rects` for ordinary damage and `build_compose` when
+one window is a pure translation. A change larger than 65% of the frame is
+still a full placement. The presenter rectangle count is `diff_rects`,
+counted once outside the timed samples, so a translated window can show a
+small compose payload beside a much larger bounding rectangle.
+`presenter_clock` is the presenter's own encode of the taskbar change,
+including the bytes it would write.
 
 ## Tests
 
