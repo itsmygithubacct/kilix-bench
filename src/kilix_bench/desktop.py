@@ -6,14 +6,14 @@ the Kilix frame presenter.
 """
 
 import argparse
-import base64
 import json
 import os
 import platform
-import re
 import subprocess
 import sys
 import time
+
+from kilix_bench.terminal import ConsumerTerm
 
 
 def _parse():
@@ -220,22 +220,7 @@ def measure(args):
 
     pointer_samples, _ = _time(pointer, args.repeats, args.warmup)
 
-    class _Term:
-        """Read and unlink shared-memory frames so the presenter can reuse slots."""
-
-        _shm = re.compile(r"\x1b_G([^;]*\bt=s\b[^;]*);([A-Za-z0-9+/=]+)\x1b\\")
-
-        def __init__(self):
-            self.written = 0
-
-        def write(self, data):
-            self.written += len(data)
-            for match in self._shm.finditer(data):
-                name = base64.b64decode(match.group(2)).decode("ascii")
-                path = "/dev/shm/" + name.lstrip("/")
-                os.unlink(path)
-
-    term = _Term()
+    term = ConsumerTerm()
     presenter = kilix_graphics.FramePresenter(term, image_id=7, max_fps=0)
     columns = max(1, width // 8)
     rows = max(1, height // 16)

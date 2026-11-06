@@ -85,7 +85,8 @@ def render_text(payload):
         "size {w}x{h}  python {python}  {machine}".format(
             w=payload["size"][0], h=payload["size"][1],
             python=payload["python"], machine=payload["machine"]),
-        "compose times are the PIL redraw. They do not include Kitty.",
+        payload.get("note") or (
+            "compose times are the PIL redraw. They do not include Kitty."),
         "",
     ]
     for row in payload["scenarios"]:
@@ -111,22 +112,30 @@ def render_text(payload):
                     pixel=extra.get("pixel_bytes", 0),
                     full=extra.get("full_bytes", 0)))
             if "rect_count" in extra:
-                detail += "  presenter rects {rects} ({rect_bytes} bytes)".format(
-                    rects=extra["rect_count"],
-                    rect_bytes=extra.get("rect_bytes", 0))
+                detail += "  presenter rects {rects}".format(
+                    rects=extra["rect_count"])
+                if "rect_bytes" in extra:
+                    detail += " ({rect_bytes} bytes)".format(
+                        rect_bytes=extra["rect_bytes"])
             if "wire_bytes" in extra:
                 detail += "  wire {wire} bytes".format(wire=extra["wire_bytes"])
             lines.append(detail)
+        elif "diff_bytes" in extra:
+            lines.append(
+                "                       {count} rects  {nbytes} bytes".format(
+                    count=extra.get("diff_rects", 0),
+                    nbytes=extra["diff_bytes"]))
     return "\n".join(lines) + "\n"
 
 
-def write_run(payload, forbidden=()):
+def write_run(payload, forbidden=(), slug=None):
     assert_no_local_paths(payload, forbidden)
     directory = results_dir()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    stamped = directory / f"{stamp}-kilix-95.json"
-    latest = directory / "kilix-95-latest.json"
-    text = directory / "kilix-95-latest.txt"
+    name = slug or payload.get("subject") or "kilix-95"
+    stamped = directory / f"{stamp}-{name}.json"
+    latest = directory / f"{name}-latest.json"
+    text = directory / f"{name}-latest.txt"
     body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     rendered = render_text(payload)
     _replace(stamped, body)
