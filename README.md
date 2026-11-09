@@ -40,9 +40,9 @@ directory and is removed when the run finishes.
 
 The render suite needs a Kilix checkout whose `kitty-frame-presenter` can be
 imported (an initialised submodule, or the package on `PYTHONPATH`). The
-desktop suite also needs Kilix's other submodules and a built
+desktop suite also needs Kilix's other submodules. Both suites need a built
 `libkilix-state.so`, found through `KILIX_STATE_LIBRARY` or Kilix's build
-directory.
+directory: the parent stops before starting either suite when it is missing.
 
 ## Usage
 
