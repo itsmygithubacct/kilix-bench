@@ -1,7 +1,8 @@
 # kilix-bench
 
 Offscreen frame-path measurements for Kilix: how long a Kilix 95 desk takes to
-redraw, and how many bytes the graphics SDK would send for a change.
+redraw, how many bytes the graphics SDK would send for a change, and how a
+full grid of text compares as Kitty cells, Kitty graphics, and Neuronte.
 
 Not shipped: a development tool run from a checkout. No Plebian-OS release,
 Kilix or catalog tree references it.
@@ -12,10 +13,14 @@ Offscreen measurements for Kilix rendering. The desktop suite builds a Kilix
 95 desk with no terminal, times the PIL redraw and title-bar hit testing, and
 asks the frame presenter how many bytes a change would send. The render suite
 times the graphics SDK itself: rectangle diffs, shared-memory placement,
-inline placement, a vertical compose, and a sideways window move.
+inline placement, a vertical compose, and a sideways window move. The text
+suite times one full grid of text three ways: the Kitty cell stream, the
+bitmap font sent through the Kitty graphics protocol, and Neuronte drawing
+into that same protocol. It also encodes the bitmap frame as sixel.
 
 A desktop compose time is the redraw inside the desk. A render time is the
-graphics library. Neither includes the GPU.
+graphics library. A text time is the application side of one rewrite. None
+of them includes Kitty's GPU font raster.
 
 - Runs each suite in a child process with a private temporary home, so the
   live Kilix and Kilix 95 data directories are never touched.
@@ -29,11 +34,20 @@ graphics library. Neither includes the GPU.
 ```sh
 PYTHONPATH=src python3 -m kilix_bench --desktop /path/to/kilix-95
 PYTHONPATH=src python3 -m kilix_bench --suite render
+PYTHONPATH=src python3 -m kilix_bench --suite text
 ```
 
-`--suite desktop` is the default and needs `--desktop`. `--suite render` does
-not. `--kilix-home` is the Kilix host checkout that contains `config/kilix_sdk`.
-When it is omitted, `KILIX_HOME` or the host sources directory is used.
+`--suite desktop` is the default and needs `--desktop`. `--suite render` and
+`--suite text` do not. `--kilix-home` is the Kilix host checkout that contains
+`config/kilix_sdk`. When it is omitted, `KILIX_HOME` or the host sources
+directory is used.
+
+The text suite also needs soft-raster's shared library, Neuronte's shared
+library, and `neuronte-split-v4.nrt`. It looks for them under
+`~/gpu_terminal/kilix-modules/soft-raster/build/` and
+`~/projects/neuronte/` (or `$NEURONTE`). `SOFT_RASTER_LIBRARY`,
+`NEURONTE_LIBRARY`, and `NEURONTE_WEIGHTS` override those paths. The result
+records the weight file's name and a short hash, not the path.
 
 The live desktop is not started. Desktop state for the run is a temporary
 directory and is removed when the run finishes.
@@ -51,7 +65,7 @@ directory: the parent stops before starting either suite when it is missing.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--suite desktop\|render` | `desktop` | What to measure |
+| `--suite desktop\|render\|text` | `desktop` | What to measure |
 | `--desktop PATH` | none | Kilix 95 checkout (desktop suite; must contain `main.py`) |
 | `--kilix-home PATH` | `KILIX_HOME`, else `~/.local/gpu_terminal/sources/kilix` | Kilix checkout with `config/kilix_sdk` |
 | `--width N` / `--height N` | `1920` / `1080` | Frame size |
@@ -62,7 +76,7 @@ directory: the parent stops before starting either suite when it is missing.
 ## How it works
 
 ```
-kilix_bench (parent) --sandbox env, temp HOME--> kilix_bench.desktop | .render
+kilix_bench (parent) --sandbox env, temp HOME--> kilix_bench.desktop | .render | .text
         |                                              |
         |                       imports Kilix 95 main.py / kilix_sdk.graphics
         |                       times scenarios; ConsumerTerm counts the bytes
@@ -76,7 +90,9 @@ suite module with a three-minute timeout and deletes the tree afterwards
 (`isolate.py`, `__main__.py`). The desktop suite builds the desk with Kilix 95's
 own modules and never starts a terminal; graphics writes go to a stand-in
 terminal that counts bytes and releases shared-memory names as Kitty would
-(`terminal.py`). The render suite drives `FramePresenter` directly. Every
+(`terminal.py`). The render suite drives `FramePresenter` directly. The text suite sets
+`NEURONTE_LIBRARY`, `NEURONTE_WEIGHTS`, and `SOFT_RASTER_LIBRARY` after the
+sandbox, because the sandbox strips `KILIX*` and changes `HOME`. Every
 scenario, and how to read the rectangle and byte counts, is in
 [docs/scenarios.md](docs/scenarios.md).
 
@@ -91,7 +107,8 @@ The desktop suite uses the `kilix-95` name. The render suite uses `kilix-render`
 
 The directory is user-private. Set `KILIX_BENCH_HOME` to put that tree somewhere
 else. The JSON record has the desktop version and revision, the Python version,
-and the machine type. It does not record local paths.
+and the machine type. It does not record local paths. The text suite uses the
+`kilix-text` name.
 
 ## Tests
 
@@ -103,7 +120,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 | Document | Contents |
 |---|---|
-| [docs/scenarios.md](docs/scenarios.md) | Every desktop and render scenario, and how damage, scroll and inline bytes are counted |
+| [docs/scenarios.md](docs/scenarios.md) | Every desktop, render, and text scenario, and how damage, scroll and inline bytes are counted |
 
 ## Related repositories
 

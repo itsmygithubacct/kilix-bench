@@ -59,3 +59,36 @@ protocol, so a flat frame's wire size is far below the raw RGB. A shared-memory
 frame carries a name. The stream samples turn off the presenter's warmup
 keyframe, so the timed call is the edit. `stream_full` still asks for a
 placement.
+
+## Text suite
+
+The frame is snapped down to whole 8 by 16 cells. One sample is one
+full-grid rewrite on that grid, which is the bench frame, not the live pane.
+The suite needs soft-raster's shared library, Neuronte's shared library, and
+`neuronte-split-v4.nrt`. It looks for them under
+`~/gpu_terminal/kilix-modules/soft-raster/build/` and `~/projects/neuronte/`
+(or `$NEURONTE`). `SOFT_RASTER_LIBRARY`, `NEURONTE_LIBRARY`, and
+`NEURONTE_WEIGHTS` override those paths.
+
+| Scenario | Measures |
+| --- | --- |
+| `kitty_text` | One vtebench `light_cells` rewrite: cursor home, then one character in every cell |
+| `kitty_text_alphabet` | That benchmark's whole payload, A through Z |
+| `bitmap_repeat` | soft-raster's 8×16 font, one character in every cell |
+| `neuronte_repeat` | Neuronte drawing that same screen, after the cell cache is warm |
+| `bitmap_ascii` | The bitmap font, printable ASCII cycling across the grid |
+| `neuronte_ascii` | Neuronte drawing that ASCII grid, cache warm |
+| `neuronte_cold` | `neuronte_coverage` of the 95 ASCII characters, which does not use the cache |
+| `kitty_shm` | Shared-memory placement of the bitmap ASCII frame |
+| `kitty_inline` | Inline placement of that frame |
+| `neuronte_inline` | Inline placement of the Neuronte ASCII frame |
+| `sixel` | A two-colour sixel of the bitmap letter frame. The time is this encoder; the wire size is the comparison |
+
+`kitty_text` is the ordinary way to render a terminal: the application
+sends cells, and Kitty draws the glyphs. The sample stops at the bytes
+the terminal would read. vtebench's `light_cells` is that standard; its
+script reads the live pane size, and this suite uses the bench grid in
+its place. The graphics rows are the Kitty protocol Kilix uses when the
+application owns the pixels. Neuronte and the bitmap font fill those
+pixels. Sixel is the other protocol that carries a pixel frame. A Neuronte
+time at 8×16 uses the library's automatic sample count, which is 2.

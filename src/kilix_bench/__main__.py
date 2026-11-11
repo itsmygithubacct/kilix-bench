@@ -14,8 +14,9 @@ from kilix_bench.report import render_text, write_run
 def _parser():
     parser = argparse.ArgumentParser(prog="kilix-bench")
     parser.add_argument(
-        "--suite", choices=("desktop", "render"), default="desktop",
-        help="desktop measures a Kilix 95 desk; render measures the graphics SDK")
+        "--suite", choices=("desktop", "render", "text"), default="desktop",
+        help="desktop measures a Kilix 95 desk; render measures the graphics SDK; "
+             "text compares Kitty cells, Kitty graphics, and Neuronte")
     parser.add_argument("--desktop", default="",
                         help="Path of a Kilix 95 checkout (desktop suite)")
     parser.add_argument("--kilix-home", default="",
@@ -65,6 +66,12 @@ def main(argv=None):
     forbidden = [os.path.abspath(kilix_home), os.path.expanduser("~")]
     if args.suite == "render":
         command = [sys.executable, "-m", "kilix_bench.render", *shared]
+    elif args.suite == "text":
+        from kilix_bench.text import libraries
+        for key, path in libraries().items():
+            env[key] = path
+            forbidden.append(path)
+        command = [sys.executable, "-m", "kilix_bench.text", *shared]
     else:
         if not args.desktop:
             raise SystemExit("the desktop suite needs --desktop")

@@ -104,7 +104,14 @@ def render_text(payload):
             lines.append(
                 "                       compose only: {fps} fps".format(
                     fps=extra["compose_fps"]))
-        if "kind" in extra:
+        if extra.get("kind") == "cells":
+            lines.append(
+                "                       {cells} cells  wire {wire} bytes  "
+                "frame {full} bytes".format(
+                    cells=extra.get("cells", 0),
+                    wire=extra.get("wire_bytes", 0),
+                    full=extra.get("full_bytes", 0)))
+        elif "kind" in extra:
             detail = (
                 "                       {kind}  {pixel} of {full} pixel bytes"
                 .format(
@@ -125,6 +132,11 @@ def render_text(payload):
                 "                       {count} rects  {nbytes} bytes".format(
                     count=extra.get("diff_rects", 0),
                     nbytes=extra["diff_bytes"]))
+        if "us_per_cell" in extra:
+            lines.append(
+                "                       {cells} cells  {us:.4f} us/cell".format(
+                    cells=extra.get("cells", 0),
+                    us=extra["us_per_cell"]))
     return "\n".join(lines) + "\n"
 
 
