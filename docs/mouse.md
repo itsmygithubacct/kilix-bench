@@ -143,3 +143,8 @@ pixel/cell labels, exact inverse mapping, correlation/error accounting, private
 artifacts, checksum verification, mouse-only injection validation, cleanup, and
 real pseudo-terminal quiet/visible behavior. Parser-dependent tests are explicitly
 skipped when the pinned package is unavailable.
+
+For separate Neuronte userspace-read to DRM callback analysis, see
+[Optional Neuronte callback telemetry](mouse-telemetry.md). The standalone
+`python3 -m kilix_bench.mouse_telemetry` command does not change this benchmark's
+receipt metrics or failure criteria.
