@@ -147,3 +147,11 @@ frame path. The map of every repository and how it ships is on the
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+## Mouse sessions
+
+`python3 -m kilix_bench.mouse` adds a real terminal mouse application, bounded
+Linux absolute-pointer injector, deterministic runner and artifact report.
+Quiet receipt and visible response are separate workloads. See
+[docs/mouse.md](docs/mouse.md) for the pinned parser dependency, concrete setup
+commands, coordinate transforms, software timing boundaries and tests.

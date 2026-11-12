@@ -16,3 +16,9 @@ kilix-bench = "kilix_bench.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+mouse = ["kitty-input @ git+https://github.com/itsmygithubacct/kitty-input.git@0f009064f3f32c7ea972a3d90de1522eda409e89#subdirectory=python"]
+
+[tool.setuptools.package-data]
+kilix_bench = ["mouse-parser-pin.json"]
