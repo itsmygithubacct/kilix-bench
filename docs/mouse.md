@@ -148,3 +148,7 @@ For separate Neuronte userspace-read to DRM callback analysis, see
 [Optional Neuronte callback telemetry](mouse-telemetry.md). The standalone
 `python3 -m kilix_bench.mouse_telemetry` command does not change this benchmark's
 receipt metrics or failure criteria.
+
+## Recorded hardware comparison
+
+[Regular Kilix and Neuronte, 2026-11-12](results/mouse-2026-11-12/README.md) includes original failures, final results, source revisions and measurement limits.
