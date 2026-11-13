@@ -2,12 +2,14 @@
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from kilix_bench.presentation import (
     build_probe, framebuffer_source, kitty_binary, probe_environment, release_probe_root,
@@ -17,50 +19,57 @@ from kilix_bench.report import render_text
 from kilix_bench.stages import apply_probe, catalog
 
 
-_HELPER_NAMES = (
-    "at-spi-bus-launcher",
-    "at-spi2-registryd",
-    "xdg-document-portal",
-    "xdg-desktop-portal",
-    "dbus-launch",
-)
-
-
-def helper_snapshot():
-    """Observe directories, helper commands, and portal mounts. Do not stop them."""
-    base = Path(tempfile.gettempdir())
+def helper_snapshot(base, proc=Path("/proc")):
+    """Observe resources under this test's private directory, without stopping them."""
+    base = Path(base)
+    prefix = str(base) + os.sep
+    environment_prefixes = tuple((key + prefix).encode() for key in ("HOME=", "XDG_RUNTIME_DIR="))
     names = {path.name for path in base.glob("font-present-*")} if base.is_dir() else set()
     commands = {}
-    for entry in Path("/proc").iterdir():
+    for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
         try:
+            environment = (entry / "environ").read_bytes().split(b"\0")
+            if not any(value.startswith(environment_prefixes) for value in environment):
+                continue
             command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
         except OSError:
             continue
-        if any(name in command for name in _HELPER_NAMES):
-            commands[int(entry.name)] = command[:200]
+        commands[int(entry.name)] = command[:200]
     mounts = []
     try:
-        for line in Path("/proc/self/mountinfo").read_text(errors="replace").splitlines():
+        for line in (proc / "self/mountinfo").read_text(errors="replace").splitlines():
             fields = line.split()
             if len(fields) < 5:
                 continue
-            point = fields[4]
-            if "font-present-" in point or "fuse.portal" in line:
+            point = (fields[4].replace("\\040", " ").replace("\\011", "\t")
+                     .replace("\\012", "\n").replace("\\134", "\\"))
+            if point == str(base) or point.startswith(prefix):
                 mounts.append(point)
     except OSError:
         pass
     return names, commands, set(mounts)
 
 
-def assert_no_new_helpers(test, before):
-    names, commands, mounts = helper_snapshot()
+def assert_no_new_helpers(test, base, before):
+    names, commands, mounts = helper_snapshot(base)
     new_pids = set(commands) - set(before[1])
     details = [f"{pid} {commands[pid]}" for pid in sorted(new_pids)]
     test.assertEqual(names - before[0], set(), "private directory left behind")
     test.assertEqual(new_pids, set(), "new desktop helper: " + "; ".join(details))
     test.assertEqual(mounts - before[2], set(), "new portal mount")
+
+
+@contextmanager
+def checked_probe_directory(test):
+    with tempfile.TemporaryDirectory(prefix="probe-check-") as parent:
+        with mock.patch("kilix_bench.presentation.tempfile.tempdir", parent):
+            before = helper_snapshot(parent)
+            try:
+                yield
+            finally:
+                assert_no_new_helpers(test, parent, before)
 
 
 def assert_hardware_unavailable(test, stages):
@@ -70,6 +79,20 @@ def assert_hardware_unavailable(test, stages):
 
 
 class StageTests(unittest.TestCase):
+    def test_missed_unlink_is_unavailable_without_a_timing(self):
+        probe = {
+            "peer": "kilix-kitty", "graphics_query": "answered",
+            "shm_consumed": "timeout", "shm_consumed_ns": None,
+            "session_start_ns": 20, "frame_written_ns": 30,
+            "display_latency": "unavailable", "scanout": "unavailable",
+            "gpu_latency": "unavailable",
+        }
+        stages = apply_probe(catalog(False), probe)
+        shared = next(row for row in stages if row["id"] == "consumer-shm-read")
+        self.assertEqual(shared["status"], "unavailable")
+        self.assertNotIn("shm_consumed_ns", shared)
+        assert_hardware_unavailable(self, stages)
+
     def test_catalog_names_measured_and_unavailable_work(self):
         stages = catalog(True)
         self.assertEqual(next(item for item in stages if item["id"] == "cpu-glyph-raster")["status"], "measured")
@@ -174,9 +197,8 @@ class ProbeTests(unittest.TestCase):
     def test_private_kitty_ack_does_not_claim_gpu_or_scanout(self):
         if kitty_binary() is None or shutil.which("Xvfb") is None:
             self.skipTest("private Kitty and Xvfb required")
-        before = helper_snapshot()
-        record = run_live(self.binary, kitty_binary(), timeout=25)
-        assert_no_new_helpers(self, before)
+        with checked_probe_directory(self):
+            record = run_live(self.binary, kitty_binary(), timeout=25)
         encoded = json.dumps(record)
         self.assertNotIn(str(os.path.expanduser("~")), encoded)
         for key in ("display_latency", "scanout", "gpu_latency"):
@@ -190,11 +212,20 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(query["status"], "measured")
         self.assertIn("Not scanout", query["reason"])
         shared = next(item for item in stages if item["id"] == "consumer-shm-read")
-        self.assertEqual(record.get("shm_consumed"), "observed", encoded)
-        self.assertIsInstance(record["shm_consumed_ns"], int)
-        self.assertGreater(record["shm_consumed_ns"], 0)
-        self.assertEqual(shared["status"], "measured")
-        self.assertIn("not display latency", shared["reason"].lower())
+        # A sampling observer can miss the entire create/unlink interval.
+        # That is an unavailable measurement, not a consumer failure or a
+        # successful latency sample. Keep both outcomes honest under load.
+        self.assertIn(record.get("shm_consumed"), ("observed", "timeout"), encoded)
+        if record["shm_consumed"] == "observed":
+            self.assertIsInstance(record["shm_consumed_ns"], int)
+            self.assertGreater(record["shm_consumed_ns"], 0)
+            self.assertGreaterEqual(record["shm_consumed_ns"], record["frame_written_ns"])
+            self.assertEqual(shared["status"], "measured")
+            self.assertIn("not display latency", shared["reason"].lower())
+        else:
+            self.assertIsNone(record["shm_consumed_ns"])
+            self.assertEqual(shared["status"], "unavailable")
+            self.assertNotIn("shm_consumed_ns", shared)
         self.assertNotIn("KITTY_PID", encoded)
         self.assertEqual(record["clock"], "enqueue-to-observed-unlink")
         self.assertEqual(record["milestone_start"], "immediately-before-kittyfb-present")
@@ -203,8 +234,7 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("4000", record["poll"])
         self.assertIn("not exact consumer latency", record["poll"])
         self.assertIsInstance(record["frame_written_ns"], int)
-        self.assertGreater(record["shm_consumed_ns"], 0)
-        self.assertGreaterEqual(record["shm_consumed_ns"], record["frame_written_ns"])
+        self.assertGreater(record["frame_written_ns"], 0)
         self.assertNotIn("write_to_unlink_ns", record)
 
     def test_normal_result_embeds_probe_provenance_without_paths(self):
@@ -233,9 +263,8 @@ class ProbeTests(unittest.TestCase):
         self.assertIn(provenance["kitty_framebuffer_revision"], text)
         if kitty_binary() is None or shutil.which("Xvfb") is None:
             return
-        before = helper_snapshot()
-        live = run("live", self.directory.name)
-        assert_no_new_helpers(self, before)
+        with checked_probe_directory(self):
+            live = run("live", self.directory.name)
         kitty = live["provenance"]["kitty"]
         self.assertEqual(kitty["name"], "kitty")
         self.assertEqual(len(kitty["sha256"]), 64)
@@ -253,6 +282,32 @@ class ProbeTests(unittest.TestCase):
 
 
 class IsolationTests(unittest.TestCase):
+    def test_helper_snapshot_ignores_an_unrelated_observer_and_neighbor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "probe"
+            base.mkdir()
+            owned = base / "font-present-owned"
+            owned.mkdir()
+            neighbor = Path(str(base) + "-neighbor")
+            proc = Path(directory) / "proc"
+            for pid, home, command in (
+                (101, owned / "home", "desktop-helper"),
+                (102, neighbor / "home", "desktop-helper"),
+                (103, Path(directory) / "observer", "inspect " + str(owned)),
+            ):
+                entry = proc / str(pid)
+                entry.mkdir(parents=True)
+                (entry / "environ").write_bytes(("HOME=" + str(home) + "\0").encode())
+                (entry / "cmdline").write_bytes(command.encode())
+            (proc / "self").mkdir()
+            (proc / "self/mountinfo").write_text(
+                f"1 0 0:1 / {owned}/runtime/doc rw - fuse.portal portal rw\n"
+                f"2 0 0:2 / {neighbor}/runtime/doc rw - fuse.portal portal rw\n")
+            names, commands, mounts = helper_snapshot(base, proc)
+            self.assertEqual(names, {owned.name})
+            self.assertEqual(set(commands), {101})
+            self.assertEqual(mounts, {str(owned / "runtime/doc")})
+
     def test_fake_launcher_receives_only_the_isolated_environment(self):
         outside = Path(tempfile.mkdtemp(prefix="launcher-check-"))
         self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
