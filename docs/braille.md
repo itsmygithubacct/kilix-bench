@@ -1,7 +1,8 @@
 # Braille decomposition comparison
 
 The Neuronte suite can compare a width-48 Braille expert with two trained
-width-24 experts or four width-12 quadrant experts. It measures native CPU inference, dispatch, composition,
+width-24 experts, four width-12 quadrant experts, or 8×6, 12×4, 24×2 and 48×1
+spatial experts. It measures native CPU inference, dispatch, composition,
 opening and cache reuse, and scores all 256 Braille patterns independently
 against the original signed-distance teacher. Install the `neuronte` optional
 dependencies for preparation and timing. Training additionally needs PyTorch;
@@ -47,6 +48,10 @@ reported rather than silently discarded.
 | Two width 24, parts | Left/right columns; two half-cell predictions | 6,818 total and active |
 | Two width 24, rows | Top/bottom halves; two half-cell predictions | 6,818 total and active |
 | Four width 12 | Four quadrants; all four predict | 5,668 total and active |
+| Eight width 6 | One tile per dot | 5,096 total and active |
+| Twelve width 4 | Three columns, four rows | 4,908 total and active |
+| Twenty-four width 2 | Three columns, eight rows | 4,728 total and active |
+| Forty-eight width 1 | Six columns, eight rows | 4,656 total and active |
 
 Repertoire selection is tested both through two table ranges and through
 the existing dense 64→32→2 neural gate API. The gate is **constructed**, not
@@ -106,6 +111,60 @@ halving only height does not change tau. All tiles together evaluate the same
 number of pixel samples as the full glyph. The benchmark includes two or four
 model calls, canonical bit masking, and assembly into the full output cell.
 
+## Narrower spatial experts
+
+`--fine` includes all seven spatial layouts and both existing width-48 controls.
+Train the halves and quadrants above first, or reuse their JSON exports. The
+additional layouts require a runtime and packer accepting integer distance
+widths from 1 to 1024, without padding. Colour models retain their existing
+width restrictions. All widths refer to each of three hidden layers.
+
+| Layout | Hidden width | Column fractions | Equal rows | Patterns per tile |
+|---|---:|---|---:|---|
+| dots | 6 | 1/2, 1/2 | 4 | 2 |
+| grid12 | 4 | 1/4, 1/2, 1/4 | 4 | 2, 4, 2 across each row |
+| grid24 | 2 | 1/4, 1/2, 1/4 | 8 | 2, 4, 2 across each row |
+| grid48 | 1 | 1/8, 1/8, 1/4, 1/4, 1/8, 1/8 | 8 | 2 |
+
+These are pixel-aligned, unequal columns. Equal thirds would change sample
+positions at widths 8 and 16. The middle column in grid12/grid24 contains half
+of each adjacent dot and retains both bits. Grid48's two outer columns contain
+no ink with the original 0.11 dot radius; their distance fields still vary.
+Every tile is evaluated, including blank regions. No symmetry or constant-tile
+shortcut is used. Each file's tau is 0.15 divided by its column fraction.
+
+The batched trainer has independent parameters and Adam moments for each
+tile/seed. It uses the original 20,000-step cosine schedule, labelled loss and
+unlabelled regularizer, summing per-model losses to preserve gradient scale.
+Random streams match the original initialization and sampling sequence for
+each seed and shape. Batched/compiled floating point arithmetic can change
+optimization trajectories; compare quality rather than assuming identical
+weights. The optional compiler accelerates training only. Native inference
+uses the same C runtime for every model.
+
+```sh
+python3 -m kilix_bench.braille_batch_train "$experiment" \
+  --neuronte-home "$NEURONTE_HOME" --verify
+python3 -m kilix_bench.braille_batch_train "$experiment" \
+  --neuronte-home "$NEURONTE_HOME" --layout dots --patterns 2 --compile
+for layout in grid12 grid24; do
+  for patterns in 2 4; do
+    python3 -m kilix_bench.braille_batch_train "$experiment" \
+      --neuronte-home "$NEURONTE_HOME" --layout "$layout" --patterns "$patterns" --compile
+  done
+done
+python3 -m kilix_bench.braille_batch_train "$experiment" \
+  --neuronte-home "$NEURONTE_HOME" --layout grid48 --patterns 2 --compile
+python3 -m kilix_bench.braille_prepare "$experiment" --fine \
+  --neuronte-home "$NEURONTE_HOME" --cells 8x16,16x32,48x96 --seeds 0,1
+```
+
+Two seeds (0,1) are the default. Checkpoints are saved every 2,000 steps to
+`LAYOUT-gPATTERNS.pt`. Resume with identical arguments plus `--resume`;
+identity includes trainer/teacher/layout hashes, members, steps and compiler
+mode. `--verify` checks loss, gradients and three Adam updates against separate
+Sequential networks. Models that fail quality remain in benchmark results.
+
 ## Measure
 
 ```sh
@@ -117,7 +176,10 @@ python3 -m kilix_bench --suite neuronte \
 
 `--cpu` optionally pins the worker. The manifest selects all experiment cases;
 `--experts` does not filter them. Dimensions must divide evenly into the layout:
-even width for columns, even height for rows, and both for quadrants. Teacher masks
+even width for columns, even height for rows, and both for quadrants.
+For dots use even width and height divisible by four. Grid12 needs width and
+height divisible by four; grid24 needs width divisible by four and height by
+eight; grid48 needs both divisible by eight. Teacher masks
 must have been prepared for each requested size. Loading or content errors,
 incorrect routes, incomplete batches and inconsistent output abort the run.
 
@@ -131,7 +193,8 @@ incorrect routes, incomplete batches and inconsistent output abort the run.
 
 All jobs are shuffled within each round and use fresh processes and handles.
 Process launch and priming are outside the native batch timers; OS file caches
-remain populated. The parts draw path makes two or four calls into adjacent
+remain populated. Opening uses the first requested cell's buffer dimensions.
+The parts draw path makes one call per tile into adjacent
 tiles of the same destination cell. Repertoire cases make one call per glyph.
 
 Half models have 16 distinct cache keys per handle; quadrant models have four.

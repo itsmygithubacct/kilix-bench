@@ -20,9 +20,10 @@ _Static_assert(sizeof(float) == sizeof(uint32_t), "expert outputs require 32-bit
 typedef struct {
     void *module;
     neuronte *net;
-    neuronte *parts[4];
+    neuronte *parts[48];
     int part_count, part_columns, part_rows;
-    uint32_t part_masks[4];
+    uint32_t part_masks[48];
+    int part_x[48], part_y[48], part_w[48], part_h[48];
     int (*open)(const char *, neuronte **);
     void (*close)(neuronte *);
     int (*coverage)(const neuronte *, uint32_t, int, int, int, float *);
@@ -101,6 +102,7 @@ static void open_engine(Engine *e, const char *kind, const char *library,
 static void open_parts(Engine *e, const char *layout, char **assets, int extra)
 {
     if (!e->net) fail("split glyphs require Neuronte");
+    int denominator = 0, edges[7] = {0};
     if (!strcmp(layout, "columns")) {
         e->part_columns = 2; e->part_rows = 1;
         e->part_masks[0] = 0x47; e->part_masks[1] = 0xb8;
@@ -111,11 +113,43 @@ static void open_parts(Engine *e, const char *layout, char **assets, int extra)
         e->part_columns = 2; e->part_rows = 2;
         e->part_masks[0] = 0x03; e->part_masks[1] = 0x18;
         e->part_masks[2] = 0x44; e->part_masks[3] = 0xa0;
+    } else if (!strcmp(layout, "dots") || !strcmp(layout, "grid12") ||
+               !strcmp(layout, "grid24") || !strcmp(layout, "grid48")) {
+        static const uint32_t bits[4][2] = {{1, 8}, {2, 16}, {4, 32}, {64, 128}};
+        e->part_rows = !strcmp(layout, "dots") || !strcmp(layout, "grid12") ? 4 : 8;
+        if (!strcmp(layout, "dots")) {
+            int values[] = {0, 1, 2};
+            denominator = 2; e->part_columns = 2; memcpy(edges, values, sizeof values);
+        } else if (!strcmp(layout, "grid48")) {
+            int values[] = {0, 1, 2, 4, 6, 7, 8};
+            denominator = 8; e->part_columns = 6; memcpy(edges, values, sizeof values);
+        } else {
+            int values[] = {0, 1, 3, 4};
+            denominator = 4; e->part_columns = 3; memcpy(edges, values, sizeof values);
+        }
+        for (int r = 0; r < e->part_rows; r++)
+            for (int c = 0; c < e->part_columns; c++)
+                e->part_masks[r*e->part_columns+c] =
+                    (edges[c]*2 < denominator ? bits[r*4/e->part_rows][0] : 0) |
+                    (edges[c+1]*2 > denominator ? bits[r*4/e->part_rows][1] : 0);
     } else fail("unknown split glyph layout");
     e->part_count = e->part_columns * e->part_rows;
-    if (extra != e->part_count - 1 || e->w % e->part_columns || e->h % e->part_rows)
+    if (!denominator) {
+        denominator = e->part_columns;
+        for (int c = 0; c <= e->part_columns; c++) edges[c] = c;
+    }
+    if (extra != e->part_count - 1 || e->w % denominator || e->h % e->part_rows)
         fail("model count or cell dimensions do not match the split glyph layout");
-    size_t pixels = (size_t)(e->w / e->part_columns) * (e->h / e->part_rows);
+    size_t pixels = 0;
+    for (int i = 0; i < e->part_count; i++) {
+        int col = i % e->part_columns;
+        e->part_x[i] = edges[col] * e->w / denominator;
+        e->part_y[i] = i / e->part_columns * (e->h / e->part_rows);
+        e->part_w[i] = (edges[col+1]-edges[col]) * e->w / denominator;
+        e->part_h[i] = e->h / e->part_rows;
+        size_t area = (size_t)e->part_w[i] * e->part_h[i];
+        if (area > pixels) pixels = area;
+    }
     e->part_buffer = allocate(pixels, sizeof(float));
     e->parts[0] = e->net;
     for (int i = 1; i < e->part_count; i++)
@@ -133,12 +167,12 @@ static int expert_coverage(Engine *e, uint32_t scalar, float *output)
         return e->coverage(e->net, scalar, e->w, e->h, e->samples, output);
     if (scalar < 0x2800 || scalar > 0x28ff) fail("split glyph corpus is not Braille");
     uint32_t bits = scalar - 0x2800;
-    int w = e->w / e->part_columns, h = e->h / e->part_rows;
     int samples = e->samples ? e->samples : e->w < 24 ? 2 : 1;
     for (int i = 0; i < e->part_count; i++) {
+        int w = e->part_w[i], h = e->part_h[i];
         int rc = e->coverage(e->parts[i], 0x2800 | (bits & e->part_masks[i]), w, h, samples, e->part_buffer);
         if (rc) return rc;
-        int x = i % e->part_columns * w, y = i / e->part_columns * h;
+        int x = e->part_x[i], y = e->part_y[i];
         for (int row = 0; row < h; row++)
             memcpy(output + (size_t)(y + row) * e->w + x,
                    e->part_buffer + (size_t)row * w, (size_t)w * sizeof(float));
@@ -159,10 +193,9 @@ static void expert_draw(Engine *e, DrawScalar draw, uint32_t scalar, uint32_t *c
     }
     if (scalar < 0x2800 || scalar > 0x28ff) fail("split glyph corpus is not Braille");
     uint32_t bits = scalar - 0x2800;
-    int w = e->w / e->part_columns, h = e->h / e->part_rows;
     for (int i = 0; i < e->part_count; i++)
         if (draw(e->parts[i], canvas, e->w, e->w, e->h,
-                 i % e->part_columns * w, i / e->part_columns * h, w, h,
+                 e->part_x[i], e->part_y[i], e->part_w[i], e->part_h[i],
                  0x2800 | (bits & e->part_masks[i]), UINT32_MAX)) fail("split glyph drawing failed");
 }
 
@@ -351,7 +384,7 @@ int main(int argc, char **argv)
 {
     /* engine library asset mode width height samples hinting capacity calls
      * columns rows corpus.txt output.bin [layout additional-weights...] */
-    if (argc != 15 && argc != 16 && argc != 17 && argc != 19) fail("invalid internal argument count");
+    if (argc < 15 || argc > 63) fail("invalid internal argument count");
     Engine e = {0};
     e.w = number(argv[5], 1, 128); e.h = number(argv[6], 1, 256);
     e.samples = number(argv[7], 0, 8);

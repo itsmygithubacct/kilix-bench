@@ -8,7 +8,7 @@ import struct
 import sys
 
 from kilix_bench.fonts import digest, parse_cells, revision
-from kilix_bench.braille_layouts import LAYOUTS, REGIONS
+from kilix_bench.braille_layouts import LAYOUTS, REGIONS, WIDTHS
 
 
 def make_gate(names, masks, width=32):
@@ -57,7 +57,7 @@ def target_masks(glyphs, cell, samples=8):
     return np.asarray(masks, dtype=np.float32)
 
 
-def prepare(directory, runtime, cells, seeds, spatial=False):
+def prepare(directory, runtime, cells, seeds, spatial=False, fine=False):
     import numpy as np
     directory, runtime = Path(directory).resolve(), Path(runtime).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -93,11 +93,13 @@ def prepare(directory, runtime, cells, seeds, spatial=False):
     cases[-1]["active_expert_parameters"] = 9121
     source_models = {"braille48": {"file": baseline_path.name, "sha256": digest(baseline_path),
                                    "training": baseline["training"], "shape": baseline["shape"]}}
+    layouts = tuple(LAYOUTS) if fine else ("columns", "rows", "quadrants") if spatial else ("columns",)
+    widths = {part: WIDTHS[layout] for layout in layouts for part in LAYOUTS[layout]}
     for seed in seeds:
         files = {}
-        parts = list(REGIONS) if spatial else ["lower", "upper", "left", "right"]
+        parts = list(widths) if spatial or fine else ["lower", "upper", "left", "right"]
         for part in parts:
-            width = 12 if part in LAYOUTS["quadrants"] else 24
+            width = widths.get(part, 24)
             region = REGIONS.get(part, (0xff, 0., 1., 0., 2.))
             tau = .15 / (region[2] - region[1])
             name = f"{part}-s{seed}"
@@ -116,7 +118,7 @@ def prepare(directory, runtime, cells, seeds, spatial=False):
             source_models[name] = {"file": path.name, "sha256": digest(path),
                                   "training": doc["training"], "shape": doc["shape"]}
             save(name, pack.pack(str(path)))
-        if not spatial:
+        if not spatial and not fine:
             pair = [str(files[p]) for p in ("lower", "upper")]
             bundle, ranges = pack.bundle(pair)
             if ranges != [[0x2800, 0x287f, 0], [0x2880, 0x28ff, 1]]:
@@ -132,9 +134,9 @@ def prepare(directory, runtime, cells, seeds, spatial=False):
             routes = [0] * 128 + [1] * 128
             case(table_name, [table_name], [24, 24], routes, seed)
             case(gate_name, [gate_name], [24, 24], routes, seed, gate_width=32)
-        for layout in (LAYOUTS if spatial else ("columns",)):
-            width = 12 if layout == "quadrants" else 24
-            name = "parts24" if layout == "columns" else f"{layout}{width}"
+        for layout in layouts:
+            width = WIDTHS[layout]
+            name = "parts24" if layout == "columns" else (f"{layout}{width}" if layout in ("rows", "quadrants") else f"{layout}-h{width}")
             members = [f"{part}-s{seed}" for part in LAYOUTS[layout]]
             case(f"{name}-s{seed}", members, [width] * len(members), seed=seed, layout=layout)
     targets = {}
@@ -163,8 +165,9 @@ def main():
     parser.add_argument("--seeds", default="0,1")
     parser.add_argument("--spatial", action="store_true",
                         help="compare columns/rows at width 24 and four width-12 quadrants")
+    parser.add_argument("--fine", action="store_true", help="also compare 8x6, 12x4, 24x2 and 48x1 spatial experts")
     args = parser.parse_args()
-    print(prepare(args.directory, args.neuronte_home, args.cells, [int(s) for s in args.seeds.split(",")], args.spatial))
+    print(prepare(args.directory, args.neuronte_home, args.cells, [int(s) for s in args.seeds.split(",")], args.spatial, args.fine))
 
 
 if __name__ == "__main__":

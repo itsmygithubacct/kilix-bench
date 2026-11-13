@@ -13,7 +13,7 @@ import statistics
 import tempfile
 
 from kilix_bench import fonts
-from kilix_bench.braille_layouts import LAYOUTS
+from kilix_bench.braille_layouts import LAYOUTS, tiles
 from kilix_bench.neuronte import CASES, draw_reference
 from kilix_bench.report import scenario
 
@@ -53,8 +53,8 @@ def inputs(args):
     for case in data["cases"]:
         if case["kind"] == "parts":
             layout = case.get("layout", "columns")
-            if any((w % 2 and layout != "rows") or (h % 2 and layout != "columns") for w, h in args.cells):
-                raise ValueError("cell dimensions must divide evenly into the requested layout")
+            for w, h in args.cells:
+                tiles(layout, w, h)
     if any(f"{w}x{h}" not in data["targets"] for w, h in args.cells):
         raise ValueError("prepare teacher masks for every requested cell size")
     cases = args.expert_cases.split(",")
@@ -112,7 +112,7 @@ def measure(args):
         "process_policy": "fresh process/handles each job; OS page cache retained; loading, first "
                           "coverage and priming excluded from glyph batches; all cases shuffled each round",
         "cache_policy": "coverage bypasses runtime caches; cold draw starts empty but may hit "
-                        "within the batch; halves have 16 canonical masks per handle, quadrants four; "
+                        "within the batch; canonical pattern counts per handle are recorded in model_cases; "
                         "warm draw primes all patterns; public cache counters unavailable",
         "sampling_policy": "automatic samples from FULL glyph width, including every tile",
         "startup_policy": "no desktop imports, background preparation or persisted atlas; "
@@ -120,12 +120,12 @@ def measure(args):
         "job_timeout_seconds": args.job_timeout,
         "quality": [], "trials": [], "scenarios": [], "artifacts": [],
         "harness_sources": {name: fonts.digest(Path(__file__).with_name(name)) for name in
-                            ("braille.py", "braille_prepare.py", "braille_train.py", "braille_layouts.py", "fonts.py")},
+                            ("braille.py", "braille_prepare.py", "braille_train.py", "braille_batch_train.py", "braille_layouts.py", "fonts.py")},
     }
     modes = args.expert_cases.split(",")
     jobs = []
     for case in manifest["cases"]:
-        jobs.append((case, (2, 2), "open"))
+        jobs.append((case, args.cells[0], "open"))
         if case["kind"] == "bundle":
             jobs.append((case, (2, 2), "route-bench"))
         jobs.extend((case, cell, mode) for cell in args.cells for mode in modes)

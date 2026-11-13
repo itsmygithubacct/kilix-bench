@@ -29,8 +29,8 @@ def main():
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--log-every", type=int, default=1000)
     args = parser.parse_args()
-    if not 8 <= args.width <= 1024 or args.width % 4:
-        parser.error("width must be a multiple of four from 8 to 1024")
+    if not 1 <= args.width <= 1024:
+        parser.error("width must be from 1 to 1024")
     import numpy as np
     import torch
     torch.set_num_threads(1)
