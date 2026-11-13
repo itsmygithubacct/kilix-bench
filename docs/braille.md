@@ -93,8 +93,10 @@ pass can therefore reuse parts of later glyphs. **Cold draw is not an
 all-miss inference measurement.** Use coverage for that comparison. Cache
 counters are unavailable through the public runtime API. Runtime caches are
 separate from the RC9 persisted desktop atlas and startup preparation; neither
-desktop facility participates here. Fully cached results measure drawing and
-lookup costs rather than network speed.
+desktop facility participates here. Fully cached results skip expert inference
+but still include routing. The reviewed runtime selects the expert before
+cache lookup and again after lookup, so a gate-only bundle evaluates its gate
+twice on a warm draw. Table hits avoid that gate work.
 
 Results are named `kilix-braille` under `KILIX_BENCH_HOME/results`. They include
 per-glyph quality, preview sheets, model/library/harness hashes, raw wall/CPU
