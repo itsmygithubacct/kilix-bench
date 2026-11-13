@@ -124,6 +124,11 @@ def _fonts(args, kilix_home):
         env["KILIX_BENCH_ARTIFACT_DIR"] = str(artifacts)
         env["NEURONTE_LIBRARY"] = str(paths["library"])
         env["NEURONTE_WEIGHTS"] = str(paths["weights"])
+        # Reference checks run outside native timers, but their BLAS workers
+        # can otherwise keep spinning while the native subprocess is timed.
+        reference_threads = {name: "1" for name in
+                             ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")}
+        env.update(reference_threads)
         command = [sys.executable, "-m", "kilix_bench." + args.suite, "--cells",
                    ",".join(f"{w}x{h}" for w, h in args.cells), "--seed", str(args.seed),
                    "--job-timeout", str(args.job_timeout),
@@ -148,6 +153,7 @@ def _fonts(args, kilix_home):
             command += ["--cpu", str(args.cpu)]
         # Each native job has its own 180s bound. A campaign is many jobs.
         payload = _run(command, env, root, timeout=None)
+        payload["reference_thread_limits"] = reference_threads
         payload["artifact_directory"] = artifacts.name
         forbidden = (str(Path.home()), *(str(path) for path in paths.values()))
         stamped, _, text = write_run(payload, forbidden=forbidden)

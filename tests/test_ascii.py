@@ -80,13 +80,16 @@ class NativeAsciiTests(unittest.TestCase):
                       'cases':[{'name':'control','kind':'bundle','members':['control'],'routes':[0]*95}]}
             path=root/'manifest.json';path.write_text(json.dumps(manifest))
             env=dict(os.environ,KILIX_BENCH_HOME=str(root/'bench'),KILIX_HOME='',KILIX_STATE_LIBRARY='',
-                     NEURONTE_LIBRARY=str(Path(home)/'build/libneuronte.so'),NEURONTE_WEIGHTS=str(weights))
+                     NEURONTE_LIBRARY=str(Path(home)/'build/libneuronte.so'),NEURONTE_WEIGHTS=str(weights),
+                     OPENBLAS_NUM_THREADS='4',OMP_NUM_THREADS='4',MKL_NUM_THREADS='4')
             command=[sys.executable,'-m','kilix_bench','--suite','neuronte','--ascii-experiment',str(path),
                      '--cells','2x4','--repeats','1','--warmup','0','--expert-passes','2']
             subprocess.run(command,env=env,check=True,capture_output=True,text=True,timeout=60)
             result=json.loads((root/'bench/results/kilix-ascii-latest.json').read_text())
             self.assertEqual(len(result['corpus']),95)
             self.assertEqual(len(result['trials']),5)
+            self.assertEqual(result['reference_thread_limits'],
+                             {k:'1' for k in ('OPENBLAS_NUM_THREADS','OMP_NUM_THREADS','MKL_NUM_THREADS')})
             self.assertLessEqual(result['reference'][0]['max_abs_difference'],1e-3)
             self.assertFalse(result['quality'][0]['all_binary_exact'])
             for row in result['trials']:

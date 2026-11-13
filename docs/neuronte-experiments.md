@@ -16,6 +16,10 @@ Choose a CPU allowed by the host's affinity. Run competing experiments
 serially and retain power, temperature, frequency and background-load
 observations. The suite measures a native single-threaded renderer, not a
 desktop's startup, persistent atlas, shaping or display presentation.
+The top-level CLI sets `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and
+`MKL_NUM_THREADS` to one in its measurement subprocess and records those limits.
+This keeps the NumPy reference worker from creating a competing thread pool.
+When calling the internal worker module directly, set those variables yourself.
 
 The JSON object has these fields:
 
