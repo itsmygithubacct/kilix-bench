@@ -1,0 +1,73 @@
+# Comparing Neuronte decompositions
+
+The Neuronte suite accepts an immutable experiment manifest as an alternative
+to the built-in split-v5 inventory. Use `--ascii-experiment manifest.json` for
+all 95 printable ASCII characters, `--braille-experiment manifest.json` for
+all 256 Braille patterns, or `--expert-experiment manifest.json` for an explicit
+ordered repertoire, including disjoint Unicode ranges.
+
+```sh
+python3 -m kilix_bench --suite neuronte --neuronte-home /path/to/runtime \
+  --expert-experiment /path/to/experiment/manifest.json \
+  --cells 8x16,16x32,48x96 --warmup 1 --repeats 10 --expert-passes 4 --cpu 3
+```
+
+Choose a CPU allowed by the host's affinity. Run competing experiments
+serially and retain power, temperature, frequency and background-load
+observations. The suite measures a native single-threaded renderer, not a
+desktop's startup, persistent atlas, shaping or display presentation.
+
+The JSON object has these fields:
+
+| Field | Meaning |
+|---|---|
+| `schema` | `kilix-bench.expert-experiment/v1`, or the corresponding `ascii`/`braille` schema |
+| `corpus` | Ordered distinct integer Unicode scalars; target plane order and expected route order |
+| `models` | Object keyed by asset name; each entry has relative `file` and exact `sha256` |
+| `targets` | Object keyed by `WxH`; each entry has relative NumPy `file` and exact `sha256` |
+| `teacher` | Reproducible teacher/source/provenance metadata, retained in the result |
+| `runtime_revision` | Intended source revision; the actual loaded library is separately hashed |
+| `cases` | Nonempty list of uniquely named cases, retaining passing and failing candidates |
+
+Each ASCII/general expert case has `name`, `kind: "bundle"`, `members` with
+one model asset key, and `routes` with one expected native expert index per
+corpus scalar. A standalone scalar net or a tiled member is also a valid
+single-handle asset; its route index is zero. Spatial composition belongs in
+the runtime member and is included in the measured public call. Repertoire
+experts are packed as a routed bundle. Additional metadata, such as seeds,
+layout, parameter counts and training-source hashes, is retained verbatim.
+
+Braille retains its historical `parts` cases and known layouts for comparing
+composition in the benchmark caller with composition inside a model. An
+ASCII/general expert manifest cannot silently request that Braille-specific
+scalar transformation.
+
+Targets are finite coverage arrays of shape `(len(corpus), height, width)`,
+bounded by zero and one. Every asset must resolve inside the manifest's
+directory and match its declared hash. The native route for every scalar is
+checked before timing. Scalars are shuffled reproducibly; disjoint ranges
+index targets and routes by manifest position, never by scalar subtraction.
+
+Opening is timed separately and includes library loading, all model handles
+and coverage buffers. Each timed job starts in a fresh process. The OS page
+cache is retained. Coverage uses the public uncached coverage API; warm drawing
+primes the entire corpus outside timing; first-corpus drawing starts with an
+empty runtime draw cache. It can still hit within that corpus when multiple
+scalars share canonical inputs. Every glyph draw clears its ARGB cell. Opening,
+routing, coverage and both drawing modes have separate results. Raw wall and
+CPU times, full-batch per-glyph means and medians over trials are retained.
+
+Independent reference pixels, complete API-call counts and priming counts
+must match before a timing is accepted. A rendered buffer alone is not a
+quality pass. Quality records binary-exact and firm-exact glyphs, wrong pixels,
+IoU, coverage MAE, pixel-error p99 and nearest teacher identity, including
+per-glyph details. A firm pixel has teacher coverage at least 0.1 from one-half.
+Nearest-identity scoring accepts teacher aliases with less than half a pixel
+of total coverage difference. No quality failure removes a candidate from
+the result. Declare selection budgets relative to the original model before
+examining candidate scores, and validate additional geometry before shipping.
+
+JSONL and CSV trials, the complete quality record and per-case coverage
+previews are hashed artifacts. The CLI writes separate latest results for
+ASCII, Braille and general expert experiments. Use a separate
+`KILIX_BENCH_HOME` for each concurrent study so results remain attributable.

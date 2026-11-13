@@ -22,8 +22,13 @@ CASES = ("coverage", "draw-cold", "draw-warm")
 
 
 def add_arguments(parser):
-    parser.add_argument("--braille-experiment", default="",
+    experiments = parser.add_mutually_exclusive_group()
+    experiments.add_argument("--braille-experiment", default="",
                         help="SHA256-bound Braille decomposition manifest; compare all its cases")
+    experiments.add_argument("--ascii-experiment", default="",
+                        help="SHA256-bound ASCII spatial/repertoire manifest; compare all its cases")
+    experiments.add_argument("--expert-experiment", default="",
+                        help="SHA256-bound decomposition manifest for an explicit expert repertoire")
     parser.add_argument("--experts", default="all", help="all, or comma-separated: " +
                         ",".join(item[0] for item in EXPERTS))
     parser.add_argument("--expert-cases", default=",".join(CASES),
@@ -33,6 +38,12 @@ def add_arguments(parser):
 
 
 def inputs(args):
+    if getattr(args, "expert_experiment", ""):
+        from kilix_bench.decomposition import inputs as experiment_inputs
+        return experiment_inputs(args, family="expert")
+    if getattr(args, "ascii_experiment", ""):
+        from kilix_bench.ascii import inputs as experiment_inputs
+        return experiment_inputs(args)
     if args.braille_experiment:
         from kilix_bench.braille import inputs as experiment_inputs
         return experiment_inputs(args)
@@ -79,6 +90,12 @@ def check_trial(row, raw, expected, case, count, calls):
 
 
 def measure(args):
+    if getattr(args, "expert_experiment", ""):
+        from kilix_bench.decomposition import measure as experiment_measure
+        return experiment_measure(args, family="expert")
+    if getattr(args, "ascii_experiment", ""):
+        from kilix_bench.ascii import measure as experiment_measure
+        return experiment_measure(args)
     if args.braille_experiment:
         from kilix_bench.braille import measure as experiment_measure
         return experiment_measure(args)
