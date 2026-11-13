@@ -13,6 +13,7 @@ import statistics
 import tempfile
 
 from kilix_bench import fonts
+from kilix_bench.braille_layouts import LAYOUTS
 from kilix_bench.neuronte import CASES, draw_reference
 from kilix_bench.report import scenario
 
@@ -33,7 +34,10 @@ def read_experiment(path):
     if not names or len(names) != len(set(names)) or any(not re.fullmatch(r"[a-z0-9-]+", n) for n in names):
         raise ValueError("invalid or duplicate experiment case")
     for case in data["cases"]:
-        if case["kind"] not in ("bundle", "parts") or len(case["members"]) != (2 if case["kind"] == "parts" else 1):
+        layout = case.get("layout", "columns")
+        if case["kind"] not in ("bundle", "parts") or layout not in LAYOUTS:
+            raise ValueError("invalid experiment kind or layout")
+        if len(case["members"]) != (len(LAYOUTS[layout]) if case["kind"] == "parts" else 1):
             raise ValueError("invalid experiment member count")
         if any(name not in data["models"] for name in case["members"]):
             raise ValueError("missing experiment model")
@@ -46,8 +50,11 @@ def inputs(args):
     paths = fonts.inputs(args, experts=True)
     data, extra = read_experiment(args.braille_experiment)
     paths.update(extra)
-    if any(w % 2 for w, _ in args.cells):
-        raise ValueError("Braille decomposition comparisons require even cell widths")
+    for case in data["cases"]:
+        if case["kind"] == "parts":
+            layout = case.get("layout", "columns")
+            if any((w % 2 and layout != "rows") or (h % 2 and layout != "columns") for w, h in args.cells):
+                raise ValueError("cell dimensions must divide evenly into the requested layout")
     if any(f"{w}x{h}" not in data["targets"] for w, h in args.cells):
         raise ValueError("prepare teacher masks for every requested cell size")
     cases = args.expert_cases.split(",")
@@ -94,8 +101,8 @@ def measure(args):
         "started_utc": datetime.now(timezone.utc).isoformat(), "size": args.cells[0],
         "python": platform.python_version(), "machine": platform.machine(),
         "note": "All 256 Braille patterns. Coverage and draw: ms/glyph, full-batch means. "
-                "Opening: ms/model set. Routes: ms/selection. Two-part coverage includes "
-                "bit masking, both half-cell inferences and joining. Quality failures are retained.",
+                "Opening: ms/model set. Routes: ms/selection. Tiled coverage includes "
+                "bit masking, every tile inference and joining. Quality failures are retained.",
         "assets": {key: {"name": p.name, "sha256": fonts.digest(p), "bytes": p.stat().st_size}
                    for key, p in paths.items()},
         "model_cases": manifest["cases"], "teacher": manifest["teacher"],
@@ -105,15 +112,15 @@ def measure(args):
         "process_policy": "fresh process/handles each job; OS page cache retained; loading, first "
                           "coverage and priming excluded from glyph batches; all cases shuffled each round",
         "cache_policy": "coverage bypasses runtime caches; cold draw starts empty but may hit "
-                        "within the batch; parts have only 16 distinct canonical masks per handle; "
+                        "within the batch; halves have 16 canonical masks per handle, quadrants four; "
                         "warm draw primes all patterns; public cache counters unavailable",
-        "sampling_policy": "automatic samples from FULL glyph width, including both halves",
+        "sampling_policy": "automatic samples from FULL glyph width, including every tile",
         "startup_policy": "no desktop imports, background preparation or persisted atlas; "
                           "opening includes every handle and coverage buffer, excludes glyph inference",
         "job_timeout_seconds": args.job_timeout,
         "quality": [], "trials": [], "scenarios": [], "artifacts": [],
         "harness_sources": {name: fonts.digest(Path(__file__).with_name(name)) for name in
-                            ("braille.py", "braille_prepare.py", "braille_train.py", "fonts.py")},
+                            ("braille.py", "braille_prepare.py", "braille_train.py", "braille_layouts.py", "fonts.py")},
     }
     modes = args.expert_cases.split(",")
     jobs = []
@@ -132,7 +139,8 @@ def measure(args):
             local.raster_calls = calls
             models = [paths["model:" + name] for name in case["members"]]
             return fonts.run_worker(binary, {**paths, "weights": models[0]}, "neuronte", "nrt-" + mode,
-                                    cell, codes, local, temporary, second_weights=models[1] if len(models) == 2 else None)
+                                    cell, codes, local, temporary, part_weights=models[1:] if len(models) > 1 else None,
+                                    part_layout=case.get("layout", "columns"))
         for case in manifest["cases"]:
             name = case["name"]
             if case["kind"] == "bundle":

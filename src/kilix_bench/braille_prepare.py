@@ -8,6 +8,7 @@ import struct
 import sys
 
 from kilix_bench.fonts import digest, parse_cells, revision
+from kilix_bench.braille_layouts import LAYOUTS, REGIONS
 
 
 def make_gate(names, masks, width=32):
@@ -56,7 +57,7 @@ def target_masks(glyphs, cell, samples=8):
     return np.asarray(masks, dtype=np.float32)
 
 
-def prepare(directory, runtime, cells, seeds):
+def prepare(directory, runtime, cells, seeds, spatial=False):
     import numpy as np
     directory, runtime = Path(directory).resolve(), Path(runtime).resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -68,12 +69,18 @@ def prepare(directory, runtime, cells, seeds):
         path = directory / (name + ".nrt")
         path.write_bytes(raw)
         models[name] = {"file": path.name, "sha256": digest(path), "bytes": len(raw)}
-    def case(name, members, widths, routes=None, seed=None, gate_width=0):
+    def case(name, members, widths, routes=None, seed=None, gate_width=0, layout=None):
         entry = {"name": name, "members": members, "hidden_widths": widths,
                  "seed": seed, "gate_width": gate_width, "routes": routes,
-                 "kind": "parts" if len(members) == 2 else "bundle",
+                 "kind": "parts" if len(members) > 1 else "bundle",
                  "parameters": sum(2*h*h+94*h+1 for h in widths) + (gate_width*67+2 if gate_width else 0)}
         cases.append(entry)
+        if layout:
+            entry["layout"] = layout
+            entry["regions"] = [{"part": part, "mask": REGIONS[part][0],
+                                  "x_domain": list(REGIONS[part][1:3]),
+                                  "y_domain": list(REGIONS[part][3:5])} for part in LAYOUTS[layout]]
+            entry["patterns_per_member"] = [1 << REGIONS[part][0].bit_count() for part in LAYOUTS[layout]]
     baseline_path = runtime / "weights/neuronte-braille-v0.json"
     baseline = json.loads(baseline_path.read_text())
     if baseline["shape"]["hidden_width"] != 48:
@@ -88,34 +95,48 @@ def prepare(directory, runtime, cells, seeds):
                                    "training": baseline["training"], "shape": baseline["shape"]}}
     for seed in seeds:
         files = {}
-        for part in ("lower", "upper", "left", "right"):
+        parts = list(REGIONS) if spatial else ["lower", "upper", "left", "right"]
+        for part in parts:
+            width = 12 if part in LAYOUTS["quadrants"] else 24
+            region = REGIONS.get(part, (0xff, 0., 1., 0., 2.))
+            tau = .15 / (region[2] - region[1])
             name = f"{part}-s{seed}"
             path = directory / (name + ".json")
             doc = json.loads(path.read_text())
             experiment = doc["training"]["experiment"]
-            if (doc["shape"]["hidden_width"] != 24 or experiment["part"] != part or
-                    experiment["seed"] != seed or doc["shape"]["tau"] != (.30 if part in ("left", "right") else .15)):
+            if (doc["shape"]["hidden_width"] != width or experiment["part"] != part or
+                    experiment["seed"] != seed or doc["shape"]["tau"] != tau or
+                    experiment["x_domain"] != list(region[1:3]) or experiment["y_domain"] != list(region[3:5])):
                 raise ValueError("unexpected training model shape or identity")
+            if part in REGIONS:
+                expected = {0x2800 | bits for bits in range(256) if not bits & ~region[0]}
+                if pack.scalars(str(path))[1] != expected:
+                    raise ValueError("unexpected canonical training repertoire")
             files[part] = path
             source_models[name] = {"file": path.name, "sha256": digest(path),
                                   "training": doc["training"], "shape": doc["shape"]}
             save(name, pack.pack(str(path)))
-        pair = [str(files[p]) for p in ("lower", "upper")]
-        bundle, ranges = pack.bundle(pair)
-        if ranges != [[0x2800, 0x287f, 0], [0x2880, 0x28ff, 1]]:
-            raise ValueError("unexpected repertoire partition")
-        table_name, gate_name = f"table24-s{seed}", f"gate24-s{seed}"
-        save(table_name, bundle)
-        doc = json.loads(files["lower"].read_text())
-        gate = make_gate([pack.scalars(p)[0] for p in pair], doc["shape"]["parity_masks"])
-        gate_path = directory / f"router-s{seed}.json"
-        gate_path.write_text(json.dumps(gate) + "\n")
-        image, _ = pack.bundle(pair, str(gate_path))
-        save(gate_name, remove_ranges(image))
-        routes = [0] * 128 + [1] * 128
-        case(table_name, [table_name], [24, 24], routes, seed)
-        case(gate_name, [gate_name], [24, 24], routes, seed, gate_width=32)
-        case(f"parts24-s{seed}", [f"left-s{seed}", f"right-s{seed}"], [24, 24], seed=seed)
+        if not spatial:
+            pair = [str(files[p]) for p in ("lower", "upper")]
+            bundle, ranges = pack.bundle(pair)
+            if ranges != [[0x2800, 0x287f, 0], [0x2880, 0x28ff, 1]]:
+                raise ValueError("unexpected repertoire partition")
+            table_name, gate_name = f"table24-s{seed}", f"gate24-s{seed}"
+            save(table_name, bundle)
+            doc = json.loads(files["lower"].read_text())
+            gate = make_gate([pack.scalars(p)[0] for p in pair], doc["shape"]["parity_masks"])
+            gate_path = directory / f"router-s{seed}.json"
+            gate_path.write_text(json.dumps(gate) + "\n")
+            image, _ = pack.bundle(pair, str(gate_path))
+            save(gate_name, remove_ranges(image))
+            routes = [0] * 128 + [1] * 128
+            case(table_name, [table_name], [24, 24], routes, seed)
+            case(gate_name, [gate_name], [24, 24], routes, seed, gate_width=32)
+        for layout in (LAYOUTS if spatial else ("columns",)):
+            width = 12 if layout == "quadrants" else 24
+            name = "parts24" if layout == "columns" else f"{layout}{width}"
+            members = [f"{part}-s{seed}" for part in LAYOUTS[layout]]
+            case(f"{name}-s{seed}", members, [width] * len(members), seed=seed, layout=layout)
     targets = {}
     for cell in cells:
         name = f"truth-{cell[0]}x{cell[1]}.npy"
@@ -140,8 +161,10 @@ def main():
     parser.add_argument("--neuronte-home", required=True, type=Path)
     parser.add_argument("--cells", type=parse_cells, default=parse_cells("8x16,16x32,48x96"))
     parser.add_argument("--seeds", default="0,1")
+    parser.add_argument("--spatial", action="store_true",
+                        help="compare columns/rows at width 24 and four width-12 quadrants")
     args = parser.parse_args()
-    print(prepare(args.directory, args.neuronte_home, args.cells, [int(s) for s in args.seeds.split(",")]))
+    print(prepare(args.directory, args.neuronte_home, args.cells, [int(s) for s in args.seeds.split(",")], args.spatial))
 
 
 if __name__ == "__main__":

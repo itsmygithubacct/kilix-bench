@@ -20,7 +20,9 @@ _Static_assert(sizeof(float) == sizeof(uint32_t), "expert outputs require 32-bit
 typedef struct {
     void *module;
     neuronte *net;
-    neuronte *right;
+    neuronte *parts[4];
+    int part_count, part_columns, part_rows;
+    uint32_t part_masks[4];
     int (*open)(const char *, neuronte **);
     void (*close)(neuronte *);
     int (*coverage)(const neuronte *, uint32_t, int, int, int, float *);
@@ -29,7 +31,7 @@ typedef struct {
     int w, h, samples, baseline;
     FT_Int32 flags;
     float *coverage_buffer;
-    float *left_buffer, *right_buffer;
+    float *part_buffer;
     uint64_t raster_calls, clipped;
 } Engine;
 
@@ -96,34 +98,50 @@ static void open_engine(Engine *e, const char *kind, const char *library,
     } else fail("unknown engine");
 }
 
-static void open_right(Engine *e, const char *asset)
+static void open_parts(Engine *e, const char *layout, char **assets, int extra)
 {
-    if (!e->net || e->w % 2) fail("split glyphs require Neuronte and an even width");
-    if (e->open(asset, &e->right)) fail("cannot open right-column weights");
-    size_t half = (size_t)(e->w / 2) * e->h;
-    e->left_buffer = allocate(half, sizeof(float));
-    e->right_buffer = allocate(half, sizeof(float));
+    if (!e->net) fail("split glyphs require Neuronte");
+    if (!strcmp(layout, "columns")) {
+        e->part_columns = 2; e->part_rows = 1;
+        e->part_masks[0] = 0x47; e->part_masks[1] = 0xb8;
+    } else if (!strcmp(layout, "rows")) {
+        e->part_columns = 1; e->part_rows = 2;
+        e->part_masks[0] = 0x1b; e->part_masks[1] = 0xe4;
+    } else if (!strcmp(layout, "quadrants")) {
+        e->part_columns = 2; e->part_rows = 2;
+        e->part_masks[0] = 0x03; e->part_masks[1] = 0x18;
+        e->part_masks[2] = 0x44; e->part_masks[3] = 0xa0;
+    } else fail("unknown split glyph layout");
+    e->part_count = e->part_columns * e->part_rows;
+    if (extra != e->part_count - 1 || e->w % e->part_columns || e->h % e->part_rows)
+        fail("model count or cell dimensions do not match the split glyph layout");
+    size_t pixels = (size_t)(e->w / e->part_columns) * (e->h / e->part_rows);
+    e->part_buffer = allocate(pixels, sizeof(float));
+    e->parts[0] = e->net;
+    for (int i = 1; i < e->part_count; i++)
+        if (e->open(assets[i - 1], &e->parts[i])) fail("cannot open split glyph weights");
     int (*set_samples)(neuronte *, int);
     symbol(e->module, "neuronte_set_samples", &set_samples, sizeof set_samples);
     int samples = e->samples ? e->samples : e->w < 24 ? 2 : 1;
-    if (set_samples(e->net, samples) || set_samples(e->right, samples))
-        fail("cannot set split glyph sampling");
+    for (int i = 0; i < e->part_count; i++)
+        if (set_samples(e->parts[i], samples)) fail("cannot set split glyph sampling");
 }
 
 static int expert_coverage(Engine *e, uint32_t scalar, float *output)
 {
-    if (!e->right)
+    if (!e->part_count)
         return e->coverage(e->net, scalar, e->w, e->h, e->samples, output);
     if (scalar < 0x2800 || scalar > 0x28ff) fail("split glyph corpus is not Braille");
     uint32_t bits = scalar - 0x2800;
-    int half = e->w / 2, samples = e->samples ? e->samples : e->w < 24 ? 2 : 1;
-    int rc = e->coverage(e->net, 0x2800 | (bits & 0x47), half, e->h, samples, e->left_buffer);
-    if (rc) return rc;
-    rc = e->coverage(e->right, 0x2800 | (bits & 0xb8), half, e->h, samples, e->right_buffer);
-    if (rc) return rc;
-    for (int y = 0; y < e->h; y++) {
-        memcpy(output + (size_t)y * e->w, e->left_buffer + (size_t)y * half, (size_t)half * sizeof(float));
-        memcpy(output + (size_t)y * e->w + half, e->right_buffer + (size_t)y * half, (size_t)half * sizeof(float));
+    int w = e->w / e->part_columns, h = e->h / e->part_rows;
+    int samples = e->samples ? e->samples : e->w < 24 ? 2 : 1;
+    for (int i = 0; i < e->part_count; i++) {
+        int rc = e->coverage(e->parts[i], 0x2800 | (bits & e->part_masks[i]), w, h, samples, e->part_buffer);
+        if (rc) return rc;
+        int x = i % e->part_columns * w, y = i / e->part_columns * h;
+        for (int row = 0; row < h; row++)
+            memcpy(output + (size_t)(y + row) * e->w + x,
+                   e->part_buffer + (size_t)row * w, (size_t)w * sizeof(float));
     }
     return 0;
 }
@@ -134,18 +152,18 @@ typedef int (*DrawScalar)(neuronte *, uint32_t *, int, int, int, int, int,
 static void expert_draw(Engine *e, DrawScalar draw, uint32_t scalar, uint32_t *canvas)
 {
     memset(canvas, 0, (size_t)e->w * e->h * sizeof *canvas);
-    if (!e->right) {
+    if (!e->part_count) {
         if (draw(e->net, canvas, e->w, e->w, e->h, 0, 0, e->w, e->h, scalar, UINT32_MAX))
             fail("expert drawing failed");
         return;
     }
     if (scalar < 0x2800 || scalar > 0x28ff) fail("split glyph corpus is not Braille");
     uint32_t bits = scalar - 0x2800;
-    int half = e->w / 2;
-    if (draw(e->net, canvas, e->w, e->w, e->h, 0, 0, half, e->h,
-             0x2800 | (bits & 0x47), UINT32_MAX) ||
-        draw(e->right, canvas, e->w, e->w, e->h, half, 0, half, e->h,
-             0x2800 | (bits & 0xb8), UINT32_MAX)) fail("split glyph drawing failed");
+    int w = e->w / e->part_columns, h = e->h / e->part_rows;
+    for (int i = 0; i < e->part_count; i++)
+        if (draw(e->parts[i], canvas, e->w, e->w, e->h,
+                 i % e->part_columns * w, i / e->part_columns * h, w, h,
+                 0x2800 | (bits & e->part_masks[i]), UINT32_MAX)) fail("split glyph drawing failed");
 }
 
 static int supported(Engine *e, uint32_t scalar)
@@ -246,7 +264,7 @@ static void neuronte_case(Engine *e, const char *mode, const uint32_t *scalars,
         return;
     }
     if (!strcmp(mode, "nrt-routes") || !strcmp(mode, "nrt-route-bench")) {
-        if (e->right) fail("split glyphs execute both models without scalar routing");
+        if (e->part_count) fail("split glyphs execute all models without scalar routing");
         int (*route)(const neuronte *, uint32_t);
         symbol(e->module, "neuronte_route", &route, sizeof route);
         if (!strcmp(mode, "nrt-route-bench")) {
@@ -323,7 +341,8 @@ static void neuronte_case(Engine *e, const char *mode, const uint32_t *scalars,
            ",\"cache_hits\":null,\"cache_misses\":null,\"output_bytes\":%zu"
            ",\"peak_rss_kib\":%ld,\"minor_faults\":%ld,\"major_faults\":%ld}\n",
            elapsed, cpu_elapsed, init_ns, init_cpu_ns, first_ns, prime_ns,
-           prime ? count : 0, calls, draw ? 0 : calls * (e->right ? 2 : 1), draw ? calls * (e->right ? 2 : 1) : 0,
+           prime ? count : 0, calls, draw ? 0 : calls * (e->part_count ? e->part_count : 1),
+           draw ? calls * (e->part_count ? e->part_count : 1) : 0,
            output_bytes, usage.ru_maxrss, usage.ru_minflt, usage.ru_majflt);
     free(canvas); free(output);
 }
@@ -331,8 +350,8 @@ static void neuronte_case(Engine *e, const char *mode, const uint32_t *scalars,
 int main(int argc, char **argv)
 {
     /* engine library asset mode width height samples hinting capacity calls
-     * columns rows corpus.txt output.bin */
-    if (argc != 15 && argc != 16) fail("expected fourteen or fifteen internal arguments");
+     * columns rows corpus.txt output.bin [layout additional-weights...] */
+    if (argc != 15 && argc != 16 && argc != 17 && argc != 19) fail("invalid internal argument count");
     Engine e = {0};
     e.w = number(argv[5], 1, 128); e.h = number(argv[6], 1, 256);
     e.samples = number(argv[7], 0, 8);
@@ -357,9 +376,10 @@ int main(int argc, char **argv)
     uint64_t init_cpu_started = ns(CLOCK_PROCESS_CPUTIME_ID);
     uint64_t started = ns(CLOCK_MONOTONIC);
     open_engine(&e, argv[1], argv[2], argv[3], hinting);
-    if (argc == 16) {
+    if (argc > 15) {
         if (strncmp(argv[4], "nrt-", 4)) fail("split glyphs require an expert case");
-        open_right(&e, argv[15]);
+        if (argc == 16) open_parts(&e, "columns", argv + 15, 1);
+        else open_parts(&e, argv[15], argv + 16, argc - 16);
     }
     uint64_t init_ns = ns(CLOCK_MONOTONIC) - started;
     uint64_t init_cpu_ns = ns(CLOCK_PROCESS_CPUTIME_ID) - init_cpu_started;
@@ -435,9 +455,9 @@ int main(int argc, char **argv)
            e.face ? e.face->size->metrics.y_ppem : 0, e.baseline);
     free(mask); free(output); free(cache.entries); free(cache.storage);
 done:
-    free(e.left_buffer); free(e.right_buffer);
+    free(e.part_buffer);
     free(e.coverage_buffer);
-    if (e.right) e.close(e.right);
+    for (int i = 1; i < e.part_count; i++) e.close(e.parts[i]);
     if (e.net) e.close(e.net);
     if (e.module) dlclose(e.module);
     if (e.face) FT_Done_Face(e.face);

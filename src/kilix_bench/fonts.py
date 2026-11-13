@@ -114,7 +114,8 @@ def build_worker(directory):
                         ["pkg-config", "--modversion", "freetype2"], text=True).strip()}
 
 
-def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capacity=None, second_weights=None):
+def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capacity=None,
+               second_weights=None, part_weights=None, part_layout="columns"):
     corpus = Path(directory) / "corpus.txt"
     corpus.write_text("".join(f"{code:x}\n" for code in scalars), encoding="ascii")
     output = Path(directory) / "pixels.bin"
@@ -125,7 +126,11 @@ def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capa
                *map(str, cell), "0", str(int(args.hinting == "native")),
                str(capacity or args.cache_entries), str(calls), *geometry, str(corpus), str(output)]
     if second_weights is not None:
-        command.append(str(second_weights))
+        if part_weights is not None:
+            raise ValueError("specify either second_weights or part_weights")
+        part_weights = [second_weights]
+    if part_weights is not None:
+        command += [part_layout, *map(str, part_weights)]
     start = time.perf_counter_ns()
     completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=args.job_timeout)
     wall = time.perf_counter_ns() - start

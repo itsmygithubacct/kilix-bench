@@ -13,11 +13,30 @@ import unittest
 import numpy as np
 
 from kilix_bench import braille, braille_prepare, fonts, neuronte
+from kilix_bench.braille_layouts import LAYOUTS, REGIONS, crop_field
 from kilix_bench.report import assert_no_local_paths
 from test_neuronte import arguments
 
 
 class QualityTests(unittest.TestCase):
+    def test_regions_partition_every_dot_and_preserve_original_coordinates(self):
+        dots = ((.25, .25), (.25, .75), (.25, 1.25), (.75, .25),
+                (.75, .75), (.75, 1.25), (.25, 1.75), (.75, 1.75))
+        for layout, parts in LAYOUTS.items():
+            with self.subTest(layout=layout):
+                self.assertEqual(sum(REGIONS[p][0] for p in parts), 255)
+                for bit, (x, y) in enumerate(dots):
+                    owners = [p for p in parts if REGIONS[p][0] & (1 << bit)]
+                    self.assertEqual(len(owners), 1)
+                    _, x0, x1, y0, y1 = REGIONS[owners[0]]
+                    self.assertTrue(x0 < x < x1 and y0 < y < y1)
+                for part in parts:
+                    _, x0, x1, y0, y1 = REGIONS[part]
+                    x, y = np.linspace(0, 1, 9), np.linspace(0, 2, 17)
+                    full = x[None, :] + 3 * y[:, None]
+                    expected = (x0 + x[None, :] * (x1-x0)) + 3 * (y0 + y[:, None] / 2 * (y1-y0))
+                    np.testing.assert_array_equal(crop_field(full, REGIONS[part]), expected)
+
     def test_missing_ink_is_retained_as_failure_and_blank_is_exact(self):
         target = np.zeros((2, 4, 2), dtype=np.float32)
         target[1, 1, 0] = 1
@@ -45,12 +64,13 @@ class NativeBrailleTests(unittest.TestCase):
         cls.addClassCleanup(cls.directory.cleanup)
         cls.binary, _ = fonts.build_worker(cls.directory.name)
 
-    def run_native(self, mode, codes, cell=(2, 4), weights=None, parts=False, passes=1):
+    def run_native(self, mode, codes, cell=(2, 4), weights=None, parts=False, passes=1, layout="columns"):
         args = arguments()
         args.raster_calls = len(codes) * passes
         return fonts.run_worker(self.binary, {**self.paths, "weights": weights or self.paths["weights"]},
                                 "neuronte", "nrt-" + mode, cell, codes, args, self.directory.name,
-                                second_weights=self.paths["weights"] if parts else None)
+                                part_weights=[self.paths["weights"]] * (len(LAYOUTS[layout])-1) if parts else None,
+                                part_layout=layout)
 
     def test_parts_match_independent_calls_and_full_width_sampling_at_boundary(self):
         lib = C.CDLL(str(self.paths["library"]))
@@ -60,29 +80,34 @@ class NativeBrailleTests(unittest.TestCase):
         ptr = C.c_void_p()
         self.assertEqual(lib.neuronte_open_file(os.fsencode(self.paths["weights"]), C.byref(ptr)), 0)
         self.addCleanup(lib.neuronte_close, ptr)
-        codes = [0x2800, 0x2847, 0x28b8, 0x28ff]
-        for w, h in ((8, 16), (32, 64)):
-            with self.subTest(width=w):
-                samples = 2 if w < 24 else 1
-                expected = []
-                for code in codes:
-                    halves = []
-                    for mask in (0x47, 0xb8):
-                        output = (C.c_float * (w // 2 * h))()
-                        self.assertEqual(lib.neuronte_coverage(ptr, 0x2800 | ((code - 0x2800) & mask),
-                                                              w // 2, h, samples, output), 0)
-                        halves.append(np.frombuffer(output, dtype=np.float32).reshape(h, w // 2))
-                    expected.append(np.concatenate(halves, axis=1))
-                row, actual = self.run_native("validate", codes, (w, h), parts=True)
-                self.assertEqual(actual, np.asarray(expected).tobytes())
-                self.assertEqual(row["coverage_calls"], 2 * len(codes))
-                for mode in ("draw-cold", "draw-warm"):
-                    row, drawn = self.run_native(mode, codes, (w, h), parts=True)
-                    self.assertEqual(drawn, neuronte.draw_reference(expected[-1].tobytes()))
-                    self.assertEqual(row["draw_calls"], 2 * len(codes))
-                    self.assertEqual(row["priming_calls"], 0 if mode == "draw-cold" else len(codes))
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.run_native("validate", codes, (3, 4), parts=True)
+        codes = [0x2800, 0x2847, 0x28b8, 0x281b, 0x28e4, 0x2836, 0x28ff]
+        for layout, columns, rows, masks in (("columns", 2, 1, (0x47, 0xb8)),
+                                             ("rows", 1, 2, (0x1b, 0xe4)),
+                                             ("quadrants", 2, 2, (0x03, 0x18, 0x44, 0xa0))):
+            for w, h in ((8, 16), (32, 64)):
+                with self.subTest(layout=layout, width=w):
+                    samples, tw, th = 2 if w < 24 else 1, w // columns, h // rows
+                    expected = []
+                    for code in codes:
+                        tiles = []
+                        for mask in masks:
+                            output = (C.c_float * (tw * th))()
+                            self.assertEqual(lib.neuronte_coverage(ptr, 0x2800 | ((code - 0x2800) & mask),
+                                                                  tw, th, samples, output), 0)
+                            tiles.append(np.frombuffer(output, dtype=np.float32).reshape(th, tw))
+                        expected.append(np.concatenate([np.concatenate(tiles[i:i+columns], axis=1)
+                                                        for i in range(0, len(tiles), columns)], axis=0))
+                    row, actual = self.run_native("validate", codes, (w, h), parts=True, layout=layout)
+                    self.assertEqual(actual, np.asarray(expected).tobytes())
+                    self.assertEqual(row["coverage_calls"], len(masks) * len(codes))
+                    for mode in ("draw-cold", "draw-warm"):
+                        row, drawn = self.run_native(mode, codes, (w, h), parts=True, layout=layout)
+                        self.assertEqual(drawn, neuronte.draw_reference(expected[-1].tobytes()))
+                        self.assertEqual(row["draw_calls"], len(masks) * len(codes))
+                        self.assertEqual(row["priming_calls"], 0 if mode == "draw-cold" else len(codes))
+            bad_cell = (3, 4) if columns == 2 else (4, 3)
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_native("validate", codes, bad_cell, parts=True, layout=layout)
 
     def test_constructed_gate_and_table_select_identical_experts_for_all_patterns(self):
         # Use existing weights as fixtures: these tests establish routing and
@@ -126,9 +151,11 @@ class NativeBrailleTests(unittest.TestCase):
             # into success just because native buffers were produced correctly.
             truth = directory / "truth.npy"
             np.save(truth, np.ones((256, 4, 2), dtype=np.float32))
-            case = {"name": "control", "kind": "bundle", "members": ["control"], "routes": [5] * 256}
+            cases = [{"name": "control", "kind": "bundle", "members": ["control"], "routes": [5] * 256},
+                     {"name": "rows", "kind": "parts", "layout": "rows", "members": ["control"] * 2},
+                     {"name": "quadrants", "kind": "parts", "layout": "quadrants", "members": ["control"] * 4}]
             manifest = {"schema": "kilix-bench.braille-experiment/v1", "corpus": list(range(0x2800, 0x2900)),
-                        "cases": [case], "models": {"control": {"file": weights.name, "sha256": fonts.digest(weights)}},
+                        "cases": cases, "models": {"control": {"file": weights.name, "sha256": fonts.digest(weights)}},
                         "targets": {"2x4": {"file": truth.name, "sha256": fonts.digest(truth)}},
                         "runtime_revision": "test-fixture", "teacher": {"kind": "deliberately wrong fixture"}}
             path = directory / "manifest.json"
@@ -141,13 +168,21 @@ class NativeBrailleTests(unittest.TestCase):
             result = directory / "bench/results/kilix-braille-latest.json"
             data = json.loads(result.read_text())
             self.assertEqual(result.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(len(data["scenarios"]), 5)
-            self.assertEqual(len(data["trials"]), 5)
-            self.assertEqual(data["quality"][0]["exact_glyphs"], 0)
+            self.assertEqual(len(data["scenarios"]), 13)
+            self.assertEqual(len(data["trials"]), 13)
+            self.assertEqual([q["exact_glyphs"] for q in data["quality"]], [0, 0, 0])
             for row in data["scenarios"]:
-                trial = next(t for t in data["trials"] if t["case"] == row["extra"]["case"])
+                trial = next(t for t in data["trials"] if t["case"] == row["extra"]["case"] and
+                             t["model"] == row["extra"]["model"])
                 self.assertAlmostEqual(row["raw_seconds"][0], trial["ns_per_operation"] / 1e9)
+                if trial["case"] == "coverage":
+                    self.assertEqual(trial["coverage_calls"], 256 * {"control": 1, "rows": 2, "quadrants": 4}[trial["model"]])
             assert_no_local_paths(data, (str(Path.home()), root))
+            for bad in ({**cases[2], "members": ["control"] * 2}, {**cases[1], "layout": "unknown"}):
+                path.write_text(json.dumps({**manifest, "cases": [bad]}))
+                with self.assertRaisesRegex(ValueError, "invalid experiment"):
+                    braille.read_experiment(path)
+            path.write_text(json.dumps(manifest))
             weights.write_bytes(b"changed asset")
             with self.assertRaisesRegex(ValueError, "SHA256"):
                 braille.read_experiment(path)

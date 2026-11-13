@@ -1,4 +1,4 @@
-"""Adapt the pinned Neuronte trainer for reproducible two-expert experiments.
+"""Adapt the pinned Neuronte trainer for reproducible decomposition experiments.
 
 Training artifacts belong outside the checkout. This keeps its optimizer,
 schedule, field sampling, code features and unlabelled regularizer intact.
@@ -11,8 +11,9 @@ from pathlib import Path
 import runpy
 import sys
 
+from kilix_bench.braille_layouts import REGIONS, crop_field
 
-PARTS = ("lower", "upper", "left", "right")
+PARTS = ("lower", "upper", *REGIONS)
 
 
 def main():
@@ -22,11 +23,14 @@ def main():
     parser.add_argument("--part", required=True, choices=PARTS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--steps", type=int, default=20000)
+    parser.add_argument("--width", type=int, default=24)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--log-every", type=int, default=1000)
     args = parser.parse_args()
+    if not 8 <= args.width <= 1024 or args.width % 4:
+        parser.error("width must be a multiple of four from 8 to 1024")
     import numpy as np
     import torch
     torch.set_num_threads(1)
@@ -39,8 +43,8 @@ def main():
     original_charset, original_field = glyphs.charset, glyphs.field
     source_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     name = "braille-" + args.part
-    spatial = args.part in ("left", "right")
-    bitmask = 0x47 if args.part == "left" else 0xb8
+    spatial = args.part in REGIONS
+    bitmask, x0, x1, y0, y1 = REGIONS.get(args.part, (0xff, 0., 1., 0., 2.))
     glyphs.SETS[name] = ["braille"]
 
     def charset(requested):
@@ -55,24 +59,20 @@ def main():
     glyphs.charset = charset
     if spatial:
         def field(shapes, n, pen, tau):
-            # The public API maps each half-cell to x in [0,1]. Its training
-            # target therefore samples the original field at x/2 (+1/2 for
-            # the right). y remains [0,2]. Doubling file tau cancels the
-            # half-width factor in coverage's tau * width * samples scale.
-            full = original_field(shapes, n, pen, tau / 2).astype(np.float16).astype(np.float32)
-            columns = np.arange(n + 1) / 2 + (n / 2 if args.part == "right" else 0)
-            low = columns.astype(np.int64)
-            high = np.minimum(low + 1, n)
-            fraction = columns - low
-            return full[:, low] * (1 - fraction) + full[:, high] * fraction
+            # Crop the original normalized distance, then stretch its domain
+            # to the existing API's [0,1] x [0,2] input coordinates. File tau
+            # compensates only for tile WIDTH in the coverage formula.
+            full = original_field(shapes, n, pen, tau * (x1 - x0)).astype(np.float16).astype(np.float32)
+            return crop_field(full, REGIONS[args.part])
         glyphs.field = field
 
     experiment = {
         "schema": "kilix-bench.braille-training/v1", "part": args.part,
         "adapter_sha256": source_hash,
+        "layouts_sha256": hashlib.sha256(Path(__file__).with_name("braille_layouts.py").read_bytes()).hexdigest(),
+        "hidden_width": args.width,
         "input_mapping": f"U+2800 | ((scalar-U+2800) & 0x{bitmask:02x})" if spatial else "original scalar",
-        "x_domain": [0, .5] if args.part == "left" else [.5, 1] if args.part == "right" else [0, 1],
-        "y_domain": [0, 2], "file_tau": .30 if spatial else .15,
+        "x_domain": [x0, x1], "y_domain": [y0, y1], "file_tau": .15 / (x1 - x0),
         "original_target_tau": .15, "training_steps": args.steps,
         "torch": torch.__version__, "cuda": torch.version.cuda,
         "device": torch.cuda.get_device_name(0) if args.device.startswith("cuda") else args.device,
@@ -86,7 +86,7 @@ def main():
     checkpoint.identity = bound_identity
     args.out.parent.mkdir(parents=True, exist_ok=True)
     sys.argv = [str(home / "train/train.py"), str(args.out), "--set", name,
-                "--width", "24", "--steps", str(args.steps), "--seed", str(args.seed),
+                "--width", str(args.width), "--steps", str(args.steps), "--seed", str(args.seed),
                 "--device", args.device, "--tau", str(experiment["file_tau"]),
                 "--score-sizes", "8", "--log-every", str(args.log_every)]
     if args.checkpoint:
