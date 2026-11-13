@@ -37,8 +37,16 @@ def catalog(font_trials, draw_trials=False):
         {
             "id": "consumer-shm-read",
             "status": "not-run",
-            "measures": "Time from a completed frame write until the terminal unlinks the shared-memory name.",
-            "does_not_measure": "Unlink means the terminal read the object, not that a display scanned it out.",
+            "measures": (
+                "Enqueue-to-observed-unlink: elapsed time from immediately before kittyfb_present "
+                "until a poll sees the shared-memory name gone. frame_written_ns uses that same start "
+                "until a poll sees frames_encoded advance."
+            ),
+            "does_not_measure": (
+                "Neither milestone is the interval from a completed write to unlink. "
+                "Polling can be late by one sample. Subtracting the milestones is not exact "
+                "consumer latency. Unlink is a read acknowledgement, not scanout."
+            ),
         },
         {
             "id": "gpu-upload",
@@ -98,10 +106,18 @@ def apply_probe(stages, probe):
         if probe.get("shm_consumed") == "observed" and probe.get("shm_consumed_ns") is not None:
             by_id["consumer-shm-read"].update(
                 status="measured",
+                clock="enqueue-to-observed-unlink",
+                milestone_start="immediately-before-kittyfb-present",
                 frame_enqueue_ns=probe.get("frame_enqueue_ns"),
                 frame_written_ns=probe.get("frame_written_ns"),
                 shm_consumed_ns=probe.get("shm_consumed_ns"),
-                reason="Unlink is separate from the write. It is consumer read acknowledgement, not display latency.")
+                poll=probe.get("poll"),
+                reason=(
+                    "shm_consumed_ns and frame_written_ns share a start immediately before kittyfb_present. "
+                    "The first is enqueue-to-observed-unlink and the second is enqueue-to-observed-frames-encoded. "
+                    "Both include queue, write, and poll delay, and a sample can be late by one poll. "
+                    "Subtracting them is not exact consumer latency. Unlink is a read acknowledgement, not display latency."
+                ))
         else:
             by_id["consumer-shm-read"].update(
                 status="unavailable",

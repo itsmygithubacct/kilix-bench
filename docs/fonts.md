@@ -86,11 +86,14 @@ With `--geometry on` (the default), the existing validation raster also
 records per-glyph ink, clipped samples, placed and source boxes, edge
 contact, advance, and outline mode. `--geometry-cells` defaults to `4x6,5x8`
 and is not timed. Box drawing and block corpora also export a seam or block
-panel plus a design-delta image. A gap is recorded only where both glyphs
-are expected to join. Identical cell masks set `pixel_equivalent` and still
-leave `quality_rank` and `similarity_winner` null. Unequal samples are a
-design delta, not a winner and not an SSIM. `--geometry off` skips the
-fixture images and the extra cells.
+panel plus a design-delta image. Edge contact means ink anywhere on a named
+side. A connected join requires ink on both sides of one shared boundary row
+or column. A fixture glyph that was not in the shared corpus is an unchecked
+join, not a gap. Identical cell masks set `pixel_equivalent` and still leave
+`quality_rank` and `similarity_winner` null. Byte equality and a connected
+subset of a fixture are not quality parity. Unequal samples are a design
+delta, not a winner and not an SSIM. `--geometry off` skips the fixture
+images and the extra cells.
 
 ## Controls and evidence
 
@@ -168,10 +171,17 @@ The numbers from that reply are discarded. `--presentation live` starts Xvfb
 and a new Kitty with software GL, its own instance group, and a clean
 environment. It does not attach to the caller's terminal. A graphics-query
 reply and, when observed, disappearance of the shared-memory name are consumer
-acknowledgements. `session_start_ns` includes terminal setup. `shm_consumed_ns`
-is the time from `kittyfb_present` until the name is gone after the write.
-Neither is GPU time, compositor time, or scanout. A missing Kitty or Xvfb
-records the consumer stages unavailable.
+acknowledgements. `session_start_ns` includes terminal setup.
+`frame_enqueue_ns` is the return of `kittyfb_present`. `frame_written_ns` and
+`shm_consumed_ns` share a start immediately before that call. The first is
+enqueue-to-observed-frames-encoded and the second is enqueue-to-observed-unlink.
+Both are poll observations: the first 200 iterations are a busy spin, then the pause is 200000 ns until 4000 spins, then 1000000 ns.
+A sample can be late by one poll. Subtracting them is not exact consumer
+latency, and neither is GPU time, compositor time, or scanout. The result
+records hashes of the probe source, the probe binary, and the
+kitty-framebuffer sources that were compiled, plus that checkout's revision
+and, for a live run, the Kitty binary hash and version. Paths are omitted.
+A missing Kitty or Xvfb records the consumer stages unavailable.
 
 ## Other layers
 

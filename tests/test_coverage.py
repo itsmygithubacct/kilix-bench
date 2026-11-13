@@ -130,6 +130,56 @@ class CoveragePlanTests(unittest.TestCase):
             self.assertIn("none", command)
             self.assertNotIn("--font-manifest", command)
 
+    def test_manifest_rejects_malformed_ids_and_row_shapes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            font = root / "PrimaryMono.ttf"
+            licence = root / "primary-licence.txt"
+            font.write_text("asset", encoding="utf-8")
+            licence.write_text("terms", encoding="utf-8")
+            manifest = root / "faces.json"
+
+            def load(payload):
+                manifest.write_text(payload if isinstance(payload, str) else json.dumps(payload),
+                                    encoding="utf-8")
+                return resolve_faces(parser().parse_args(["--font-manifest", str(manifest)]))
+
+            with self.assertRaisesRegex(ValueError, "not JSON"):
+                load("{")
+            with self.assertRaisesRegex(ValueError, "faces list"):
+                load({"faces": {"id": "primary"}})
+            with self.assertRaisesRegex(ValueError, "faces list"):
+                load([])
+            with self.assertRaisesRegex(ValueError, "must be an object"):
+                load({"faces": ["primary"]})
+            with self.assertRaisesRegex(ValueError, "needs file"):
+                load({"faces": [{"id": "primary", "role": "primary", "license": str(licence)}]})
+            with self.assertRaisesRegex(ValueError, "id must match"):
+                load({"faces": [{
+                    "id": "Primary", "role": "primary", "file": str(font),
+                    "license": str(licence), "license_name": "terms",
+                }]})
+            with self.assertRaisesRegex(ValueError, "id must match"):
+                load({"faces": [{
+                    "id": "9bad", "role": "primary", "file": str(font),
+                    "license": str(licence), "license_name": "terms",
+                }]})
+            with self.assertRaisesRegex(ValueError, "must be a non-empty string"):
+                load({"faces": [{
+                    "id": 1, "role": "primary", "file": str(font),
+                    "license": str(licence), "license_name": "terms",
+                }]})
+            with self.assertRaisesRegex(ValueError, "pitch must be a string"):
+                load({"faces": [{
+                    "id": "primary", "role": "primary", "file": str(font),
+                    "license": str(licence), "license_name": "terms", "pitch": 1,
+                }]})
+            faces = load({"faces": [{
+                "id": "primary", "role": "primary", "file": str(font),
+                "license": str(licence), "license_name": "terms",
+            }]})
+            self.assertEqual(faces[0].id, "primary")
+
 
 if __name__ == "__main__":
     unittest.main()

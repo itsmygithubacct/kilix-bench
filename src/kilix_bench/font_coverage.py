@@ -67,20 +67,45 @@ def _face(face_id, role, path, license_path, pitch, license_name):
     return Face(face_id, role, path, license_path, pitch, license_name)
 
 
+def _manifest_string(row, index, key):
+    if key not in row:
+        raise ValueError(f"font manifest face {index} needs {key}")
+    value = row[key]
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"font manifest face {index} {key} must be a non-empty string")
+    return value
+
+
+def _manifest_face(row, index):
+    if not isinstance(row, dict):
+        raise ValueError(f"font manifest face {index} must be an object")
+    face_id = _manifest_string(row, index, "id")
+    if not FACE_ID.fullmatch(face_id):
+        raise ValueError(f"font manifest face {index} id must match {FACE_ID.pattern}")
+    role = _manifest_string(row, index, "role")
+    path = _manifest_string(row, index, "file")
+    license_path = _manifest_string(row, index, "license")
+    if "pitch" in row and not isinstance(row["pitch"], str):
+        raise ValueError(f"font manifest face {index} pitch must be a string")
+    if "license_name" in row and not isinstance(row["license_name"], str):
+        raise ValueError(f"font manifest face {index} license_name must be a string")
+    return _face(face_id, role, path, license_path,
+                 row.get("pitch", "fixed"), row.get("license_name", ""))
+
+
 def resolve_faces(args):
     """The primary face is the default comparison. Coverage faces are opt-in."""
     if args.font_manifest:
         if args.font or args.font_license or args.coverage_font:
             raise ValueError("a font manifest replaces --font and --coverage-font")
-        payload = json.loads(Path(args.font_manifest).expanduser().read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(Path(args.font_manifest).expanduser().read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError("font manifest is not JSON") from error
         rows = payload.get("faces") if isinstance(payload, dict) else None
         if not isinstance(rows, list) or not rows:
             raise ValueError("font manifest needs a faces list")
-        faces = []
-        for row in rows:
-            faces.append(_face(
-                row["id"], row["role"], row["file"], row["license"],
-                row.get("pitch", "fixed"), row.get("license_name", "")))
+        faces = [_manifest_face(row, index) for index, row in enumerate(rows)]
     else:
         if not args.font or not args.font_license:
             raise ValueError("font suite needs --font and --font-license, or a manifest")
