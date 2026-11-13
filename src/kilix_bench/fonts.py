@@ -275,6 +275,10 @@ def _unranked(geometry):
             raise ValueError("geometry comparison ranked a font")
         if "ssim" in json.dumps(comparison).lower():
             raise ValueError("geometry comparison invented a similarity score")
+        for engine in (item.get("engines") or {}).values():
+            seam = (engine or {}).get("seam") or {}
+            if seam.get("quality_rank") is not None or seam.get("similarity_winner") is not None:
+                raise ValueError("seam report ranked a font")
 
 
 def measure(args):

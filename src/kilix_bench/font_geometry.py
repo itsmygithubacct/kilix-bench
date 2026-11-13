@@ -1,8 +1,8 @@
 """Cell geometry for box seams, clipping, and small cells.
 
-Expectations are Unicode joining classes. A missed edge is a seam gap for
-that raster, not a score against the other font. Mask differences are a
-design delta: they never select a quality winner.
+Expectations are Unicode joining classes. Edge contact and a connected join
+are different facts. Mask differences are a design delta: they never select
+a quality winner, and a connected subset of a fixture is not quality parity.
 """
 
 # Joining classes for the fixtures and the common box/block edges.
@@ -31,9 +31,15 @@ BLOCK_GRID = ((0x2588, 0x2580, 0x2584, 0x258C, 0x2590),)
 EMPTY_OK = frozenset((0x20, 0x2800))
 COMPARISON_NOTE = (
     "Unequal samples are a design delta between two rasters. "
-    "They are not an error, a similarity score, or a winner."
+    "They are not an error, a similarity score, a winner, or quality parity."
 )
-MATCH_NOTE = "Identical cell masks. This is not a quality ranking."
+MATCH_NOTE = "Identical cell masks. This is not a quality ranking or quality parity."
+SEAM_NOTE = (
+    "Edge contact means ink anywhere on a named side. A connected join needs "
+    "ink on both sides of one shared boundary row or column. A fixture glyph "
+    "with no mask is unchecked, not a gap. A connected or byte-equal subset "
+    "is not quality parity."
+)
 
 
 def edges_from_mask(mask, width, height):
@@ -87,30 +93,91 @@ def design_comparison(left, right):
     return result
 
 
-def seam_report(grid, observed):
+def _touches(mask, width, height, side):
+    if side == "R":
+        return any(mask[y * width + width - 1] for y in range(height))
+    if side == "L":
+        return any(mask[y * width] for y in range(height))
+    if side == "B":
+        return any(mask[(height - 1) * width + x] for x in range(width))
+    if side == "T":
+        return any(mask[x] for x in range(width))
+    raise ValueError("unknown seam side")
+
+
+def _connected(left, right, width, height, side):
+    """True when one shared boundary row or column has ink on both faces."""
+    if side == "R":
+        return any(left[y * width + width - 1] and right[y * width] for y in range(height))
+    if side == "B":
+        return any(left[(height - 1) * width + x] and right[x] for x in range(width))
+    raise ValueError("unknown seam side")
+
+
+def seam_report(grid, observed, masks=None, cell=None):
+    """Score expected joins from boundary samples.
+
+    ``observed`` is the any-edge-contact map. It does not decide connectivity.
+    Without ``masks``, every expected join stays unchecked. A missing mask is
+    an unchecked join, not a gap.
+    """
+    del observed  # edge letters are not a connectivity measurement
     gaps = []
-    checked = 0
+    checked = connected = edge_contact = unchecked = 0
+    missing = []
+    width = height = None
+    if masks is not None:
+        if cell is None or len(cell) != 2:
+            raise ValueError("seam connectivity needs the cell size")
+        width, height = cell
     for y, row in enumerate(grid):
         for x, scalar in enumerate(row):
             here = EXPECT.get(scalar, "")
-            got = observed.get(scalar, "")
+            pairs = []
             if x + 1 < len(row):
-                other = grid[y][x + 1]
+                other = row[x + 1]
                 if "R" in here and "L" in EXPECT.get(other, ""):
-                    checked += 1
-                    if "R" not in got or "L" not in observed.get(other, ""):
-                        gaps.append({"at": [x, y], "side": "R", "scalars": [scalar, other]})
+                    pairs.append(("R", "L", other))
             if y + 1 < len(grid):
                 other = grid[y + 1][x]
                 if "B" in here and "T" in EXPECT.get(other, ""):
-                    checked += 1
-                    if "B" not in got or "T" not in observed.get(other, ""):
-                        gaps.append({"at": [x, y], "side": "B", "scalars": [scalar, other]})
+                    pairs.append(("B", "T", other))
+            for side, facing, other in pairs:
+                left = None if masks is None else masks.get(scalar)
+                right = None if masks is None else masks.get(other)
+                if left is None or right is None:
+                    unchecked += 1
+                    for code, sample in ((scalar, left), (other, right)):
+                        if sample is None and code not in missing:
+                            missing.append(code)
+                    continue
+                if len(left) != width * height or len(right) != width * height:
+                    raise ValueError("seam mask size differs from the cell")
+                checked += 1
+                if _touches(left, width, height, side) and _touches(right, width, height, facing):
+                    edge_contact += 1
+                if _connected(left, right, width, height, side):
+                    connected += 1
+                else:
+                    gaps.append({"at": [x, y], "side": side, "scalars": [scalar, other]})
+    if grid == SEAM_GRID:
+        fixture = "box-light"
+    elif grid == BLOCK_GRID:
+        fixture = "blocks"
+    else:
+        fixture = "custom"
     return {
-        "fixture": "box-light" if grid == SEAM_GRID else "blocks",
+        "fixture": fixture,
         "checked_joins": checked,
+        "connected_joins": connected,
+        "edge_contact_joins": edge_contact,
+        "unchecked_joins": unchecked,
+        "missing_scalars": missing,
         "gap_count": len(gaps),
         "gaps": gaps[:16],
+        "quality_rank": None,
+        "similarity_winner": None,
+        "note": SEAM_NOTE,
     }
 
 
@@ -131,7 +198,8 @@ def analyze(corpus, cell, scalars, by_engine):
         masks, glyphs = data["masks"], data["glyphs"]
         if len(glyphs) != len(scalars) or len(masks) != len(scalars) * pixels:
             raise ValueError("geometry mask count differs from the corpus")
-        observed = {0x20: ""}
+        observed = {}
+        seam_masks = {}
         clipped = overhang = 0
         blanks = []
         for index, scalar in enumerate(scalars):
@@ -143,6 +211,7 @@ def analyze(corpus, cell, scalars, by_engine):
             if edges != geom["edges"]:
                 raise ValueError("worker edge flags differ from the mask")
             observed[scalar] = edges
+            seam_masks[scalar] = mask
             clipped += geom["clipped"]
             outside = source_overhangs(geom, width, height)
             overhang += int(outside)
@@ -167,7 +236,7 @@ def analyze(corpus, cell, scalars, by_engine):
             "clipped_ink_samples": clipped,
             "glyphs_with_source_overhang": overhang,
             "blank_glyphs": blanks,
-            "seam": seam_report(grid, observed) if grid else None,
+            "seam": seam_report(grid, observed, seam_masks, cell) if grid else None,
             "observed": observed,
         }
     names = list(by_engine)

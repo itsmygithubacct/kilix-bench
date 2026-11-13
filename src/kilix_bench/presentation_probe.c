@@ -151,6 +151,11 @@ static void write_record(FILE *file, const char *peer, const char *query,
     fprintf(file, ",\"transport\":");
     json_string(file, transport);
     fprintf(file,
+            ",\"clock\":\"enqueue-to-observed-unlink\""
+            ",\"milestone_start\":\"immediately-before-kittyfb-present\""
+            ",\"poll\":\"frames_encoded and the shared-memory name are polled from that start; "
+            "the first 200 iterations are a busy spin, then the pause is 200000 ns until 4000 spins, "
+            "then 1000000 ns; a sample can be late by one poll; subtracting milestones is not exact consumer latency\""
             ",\"display_latency\":\"unavailable\""
             ",\"scanout\":\"unavailable\""
             ",\"gpu_latency\":\"unavailable\",\"reason\":");
@@ -232,7 +237,7 @@ static void present_and_watch(kittyfb_session *session, const char *peer, FILE *
     }
     write_record(out, peer, "answered", shm, session_ns, enqueue, written, consumed, transport,
                  strcmp(shm, "observed") == 0
-                     ? "shared-memory name disappeared after the write"
+                     ? "enqueue-to-observed-unlink; the name was seen and then polled absent"
                      : "consumer read was not observed");
     free(frame);
 }

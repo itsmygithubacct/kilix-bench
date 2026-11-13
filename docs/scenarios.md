@@ -98,7 +98,9 @@ inside the writing process. That is application and protocol cost. It is not
 a separate terminal acknowledgement, and it is not GPU or scanout time. The
 font suite can run a separate probe: `fixture` is an in-process reply, and
 `live` is a private Kitty on its own virtual display. A live shared-memory
-unlink is that Kitty reading the object. The font result's stage list keeps
+unlink is that Kitty reading the object. The recorded interval is
+enqueue-to-observed-unlink, including queue, write, and poll delay. It is
+not exact consumer latency. The font result's stage list keeps
 GPU upload, GPU execution, SDF atlas construction, compositor present, and
 scanout marked unavailable. Software GL on a virtual display does not turn
 the probe into a display-latency measurement.

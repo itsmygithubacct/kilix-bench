@@ -31,13 +31,75 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(insets(full, width, height), {"L": 0, "R": 0, "T": 0, "B": 0})
         gap = mask(width, height, [(1, 0)])
         self.assertNotIn("L", edges_from_mask(gap, width, height))
-        observed = {scalar: "LRTB" for row in SEAM_GRID for scalar in row}
-        observed[0x20] = ""
-        observed[0x2500] = "L"
-        report = seam_report(SEAM_GRID, observed)
-        self.assertGreater(report["checked_joins"], 0)
-        self.assertGreater(report["gap_count"], 0)
-        self.assertTrue(any(item["side"] == "R" for item in report["gaps"]))
+        # Edge letters alone are not a connectivity measurement.
+        edges = {
+            0x2500: edges_from_mask(bytes([255] * 4 + [0] * 12), 4, 4),
+            0x2501: edges_from_mask(bytes([0] * 12 + [255] * 4), 4, 4),
+        }
+        self.assertIn("L", edges[0x2500])
+        self.assertIn("R", edges[0x2500])
+        self.assertIn("L", edges[0x2501])
+        self.assertIn("R", edges[0x2501])
+        blind = seam_report(((0x2500, 0x2501),), edges)
+        self.assertEqual(blind["gap_count"], 0)
+        self.assertEqual(blind["connected_joins"], 0)
+        self.assertEqual(blind["checked_joins"], 0)
+        self.assertGreater(blind["unchecked_joins"], 0)
+        self.assertIsNone(blind["quality_rank"])
+        self.assertIsNone(blind["similarity_winner"])
+
+    def test_misaligned_edge_contact_is_a_gap_and_a_missing_glyph_is_not(self):
+        left = bytes([255] * 4 + [0] * 12)
+        right = bytes([0] * 12 + [255] * 4)
+        edges = {
+            0x2500: edges_from_mask(left, 4, 4),
+            0x2501: edges_from_mask(right, 4, 4),
+        }
+        grid = ((0x2500, 0x2501),)
+        report = seam_report(grid, edges, masks={0x2500: left, 0x2501: right}, cell=(4, 4))
+        self.assertEqual(report["fixture"], "custom")
+        self.assertEqual(report["checked_joins"], 1)
+        self.assertEqual(report["edge_contact_joins"], 1)
+        self.assertEqual(report["connected_joins"], 0)
+        self.assertEqual(report["gap_count"], 1)
+        self.assertEqual(report["gaps"], [{"at": [0, 0], "side": "R", "scalars": [0x2500, 0x2501]}])
+        self.assertEqual(report["unchecked_joins"], 0)
+        self.assertEqual(report["missing_scalars"], [])
+        self.assertIsNone(report["quality_rank"])
+        self.assertIsNone(report["similarity_winner"])
+        self.assertIn("not quality parity", report["note"])
+        missing = seam_report(grid, edges, masks={0x2500: left}, cell=(4, 4))
+        self.assertEqual(missing["gap_count"], 0)
+        self.assertEqual(missing["checked_joins"], 0)
+        self.assertEqual(missing["connected_joins"], 0)
+        self.assertEqual(missing["unchecked_joins"], 1)
+        self.assertIn(0x2501, missing["missing_scalars"])
+        self.assertNotIn(0x2500, missing["missing_scalars"])
+        aligned = bytes([255] * 4 + [0] * 12)
+        connected = seam_report(
+            grid, edges, masks={0x2500: aligned, 0x2501: aligned}, cell=(4, 4))
+        self.assertEqual(connected["connected_joins"], 1)
+        self.assertEqual(connected["gap_count"], 0)
+        self.assertIsNone(connected["quality_rank"])
+        self.assertIsNone(connected["similarity_winner"])
+        column = bytearray(16)
+        other = bytearray(16)
+        for y in range(4):
+            column[y * 4] = 255
+            other[y * 4 + 3] = 255
+        vertical = seam_report(
+            ((0x2502,), (0x2503,)),
+            {0x2502: "TB", 0x2503: "TB"},
+            masks={0x2502: bytes(column), 0x2503: bytes(other)},
+            cell=(4, 4))
+        self.assertEqual(vertical["edge_contact_joins"], 1)
+        self.assertEqual(vertical["connected_joins"], 0)
+        self.assertEqual(vertical["gap_count"], 1)
+        self.assertEqual(vertical["gaps"][0]["side"], "B")
+        with self.assertRaisesRegex(ValueError, "cell size"):
+            seam_report(grid, edges, masks={0x2500: left, 0x2501: right})
+        with self.assertRaisesRegex(ValueError, "mask size"):
+            seam_report(grid, edges, masks={0x2500: left, 0x2501: right[:8]}, cell=(4, 4))
 
     def test_equal_and_unequal_masks_have_no_winner(self):
         same = design_comparison(b"\x00\xff", b"\x00\xff")
@@ -45,6 +107,8 @@ class GeometryTests(unittest.TestCase):
         self.assertIsNone(same["quality_rank"])
         self.assertIsNone(same["similarity_winner"])
         self.assertNotIn("ssim", same["note"].lower())
+        self.assertIn("quality parity", same["note"])
+        self.assertIn("not a quality ranking", same["note"])
         delta = design_comparison(b"\x00\xff", b"\xff\x00")
         self.assertFalse(delta["pixel_equivalent"])
         self.assertEqual(delta["design_delta_samples"], 2)
@@ -82,6 +146,14 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(summary["engines"]["freetype"]["glyphs_with_source_overhang"], 2)
         self.assertIsNone(summary["comparison"]["quality_rank"])
         self.assertFalse(summary["comparison"]["pixel_equivalent"])
+        self.assertIn("quality parity", summary["comparison"]["note"])
+        self.assertIn("not an error", summary["comparison"]["note"])
+        seam = summary["engines"]["neuronte"]["seam"]
+        self.assertEqual(seam["gap_count"], 0)
+        self.assertEqual(seam["connected_joins"], 0)
+        self.assertGreater(seam["unchecked_joins"], 0)
+        self.assertIsNone(seam["quality_rank"])
+        self.assertTrue(seam["missing_scalars"])
         self.assertEqual(len(rows), 4)
         by_engine["freetype"]["glyphs"][0]["edges"] = "L"
         with self.assertRaisesRegex(ValueError, "edge flags"):

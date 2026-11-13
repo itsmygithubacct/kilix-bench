@@ -103,6 +103,22 @@ def render_text(payload):
             lines.append("  {id:<24} {status}".format(
                 id=stage["id"], status=stage["status"]))
         lines.append("")
+    presentation = payload.get("presentation") or {}
+    provenance = presentation.get("provenance") if isinstance(presentation, dict) else None
+    if provenance:
+        lines.append("probe source {sha}".format(sha=provenance.get("probe_source_sha256") or "unknown"))
+        lines.append("probe binary {sha}".format(sha=provenance.get("probe_binary_sha256") or "unknown"))
+        lines.append("kitty-framebuffer {rev}".format(
+            rev=provenance.get("kitty_framebuffer_revision") or "unknown"))
+        for item in provenance.get("kitty_framebuffer_sources") or []:
+            lines.append("  {name} {sha}".format(name=item.get("name") or "source", sha=item.get("sha256") or "unknown"))
+        kitty = provenance.get("kitty")
+        if kitty:
+            lines.append("kitty {name} {sha} {version}".format(
+                name=kitty.get("name") or "kitty",
+                sha=kitty.get("sha256") or "unknown",
+                version=kitty.get("version") or "unknown"))
+        lines.append("")
     for row in payload["scenarios"]:
         lines.append(
             "{name:<22} median {median:8.3f} ms   "

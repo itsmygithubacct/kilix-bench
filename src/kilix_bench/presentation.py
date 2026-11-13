@@ -5,6 +5,7 @@ display measurement. A live probe starts a private virtual display and a
 separate Kitty process. It never writes to the caller's terminal.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -44,6 +45,54 @@ def kitty_binary():
 def public_text(text):
     cleaned = _PATH.sub("<path>", text or "")
     return cleaned[-500:]
+
+
+def _digest(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _revision(path):
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _dirty(path):
+    result = subprocess.run(
+        ["git", "-C", str(path), "status", "--porcelain"], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    return bool(result.stdout.strip())
+
+
+def probe_provenance(source, binary, kitty=None):
+    """Identify the probe and terminal by hash. Paths are not recorded."""
+    source = Path(source)
+    files = [source / "src/kitty_framebuffer.c"]
+    files.extend(sorted((source / "include").glob("*.h")))
+    record = {
+        "probe_source_sha256": _digest(Path(__file__).with_name("presentation_probe.c")),
+        "probe_binary_sha256": _digest(binary),
+        "kitty_framebuffer_revision": _revision(source),
+        "kitty_framebuffer_dirty": _dirty(source),
+        "kitty_framebuffer_sources": [
+            {"name": path.name, "sha256": _digest(path)} for path in files if path.is_file()
+        ],
+        "kitty": None,
+    }
+    if kitty is not None:
+        completed = subprocess.run(
+            [str(kitty), "--version"], capture_output=True, text=True, timeout=10)
+        lines = (completed.stdout or completed.stderr).splitlines()
+        record["kitty"] = {
+            "name": Path(kitty).name,
+            "sha256": _digest(kitty),
+            "version": public_text(lines[0].strip() if lines else ""),
+        }
+    return record
 
 
 def build_probe(directory, source=None):
@@ -90,6 +139,8 @@ def run_fixture(binary):
     # later reader cannot quote them as acknowledgement or display time.
     for key in ("session_start_ns", "frame_enqueue_ns", "frame_written_ns", "shm_consumed_ns"):
         record[key] = None
+    record["clock"] = "not-measured"
+    record["poll"] = "in-process reply; timestamps are discarded"
     return record
 
 
@@ -195,9 +246,15 @@ def run_live(binary, kitty, timeout=25):
 def run(mode, directory):
     if mode == "off":
         return None
-    binary = build_probe(directory)
+    source = framebuffer_source()
+    binary = build_probe(directory, source)
+    kitty = kitty_binary() if mode == "live" else None
+    provenance = probe_provenance(source, binary, kitty)
     if mode == "fixture":
-        return run_fixture(binary)
-    if mode == "live":
-        return run_live(binary, kitty_binary())
-    raise ValueError("unknown presentation mode")
+        record = run_fixture(binary)
+    elif mode == "live":
+        record = run_live(binary, kitty)
+    else:
+        raise ValueError("unknown presentation mode")
+    record["provenance"] = provenance
+    return record
