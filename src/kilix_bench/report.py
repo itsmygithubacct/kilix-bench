@@ -100,6 +100,10 @@ def render_text(payload):
                 max_=row["max_ms"],
             ))
         extra = row.get("extra") or {}
+        if "cpu" in extra:
+            lines.append("                       CPU median {median_ms:.3f} ms/frame".format(**extra['cpu']))
+        if "first_frame" in extra:
+            lines.append("                       first frame median {median_ms:.3f} ms".format(**extra['first_frame']))
         if "compose_fps" in extra:
             lines.append(
                 "                       compose only: {fps} fps".format(

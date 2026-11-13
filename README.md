@@ -3,6 +3,8 @@
 Offscreen frame-path measurements for Kilix: how long a Kilix 95 desk takes to
 redraw, how many bytes the graphics SDK would send for a change, and how a
 full grid of text compares as Kitty cells, Kitty graphics, and Neuronte.
+The video suite measures Neuronte's RGB composition, shared-memory transport
+and FFmpeg decoder thread choices at a specified pixel size.
 
 Not shipped: a development tool run from a checkout. No Plebian-OS release,
 Kilix or catalog tree references it.
@@ -35,12 +37,22 @@ of them includes Kitty's GPU font raster.
 PYTHONPATH=src python3 -m kilix_bench --desktop /path/to/kilix-95
 PYTHONPATH=src python3 -m kilix_bench --suite render
 PYTHONPATH=src python3 -m kilix_bench --suite text
+PYTHONPATH=src python3 -m kilix_bench --suite video --neuronte /path/to/neuronte \
+  --baseline-neuronte /path/to/baseline --video /path/to/video.mp4 \
+  --width 945 --height 531 --frames 240 --repeats 6 --warmup 1
 ```
 
 `--suite desktop` is the default and needs `--desktop`. `--suite render` and
 `--suite text` do not. `--kilix-home` is the Kilix host checkout that contains
 `config/kilix_sdk`. When it is omitted, `KILIX_HOME` or the host sources
 directory is used.
+
+The video suite needs a built Neuronte tree with `render_rgb24`, NumPy, and
+optionally FFmpeg/ffprobe when `--video` is given. It does not need a Kilix
+host or state library. `--baseline-neuronte` selects the built palette/blend
+reference; without it the candidate's independent palette path is used.
+`--start` selects the input seek position in seconds. See
+[docs/video.md](docs/video.md) for the measurement boundaries and thread matrix.
 
 The text suite also needs soft-raster's shared library, Neuronte's shared
 library, and `neuronte-split-v4.nrt`. It looks for them under
@@ -65,12 +77,15 @@ directory: the parent stops before starting either suite when it is missing.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--suite desktop\|render\|text` | `desktop` | What to measure |
+| `--suite desktop\|render\|text\|video` | `desktop` | What to measure |
 | `--desktop PATH` | none | Kilix 95 checkout (desktop suite; must contain `main.py`) |
 | `--kilix-home PATH` | `KILIX_HOME`, else `~/.local/gpu_terminal/sources/kilix` | Kilix checkout with `config/kilix_sdk` |
 | `--width N` / `--height N` | `1920` / `1080` | Frame size |
 | `--repeats N` | `12` | Timed samples per scenario |
 | `--warmup N` | `2` | Untimed samples first |
+| `--neuronte PATH` / `--baseline-neuronte PATH` | none | Built candidate and optional reference for video |
+| `--video PATH` / `--start N` | none / `0` | Optional decoder input and seek position in seconds |
+| `--frames N` | `60` | Frames per decoder run; kernels use up to 24 per sample |
 | `KILIX_BENCH_HOME` | `~/.local/gpu_terminal/kilix-bench` | Where results are written |
 
 ## How it works
@@ -86,7 +101,7 @@ kilix_bench (parent) --sandbox env, temp HOME--> kilix_bench.desktop | .render |
 
 The parent strips `GPU_TERMINAL_*`, `KILIX*` and `KITTY_*` variables, points
 every Kilix, Kilix 95 and XDG directory into a fresh temporary tree, runs the
-suite module with a three-minute timeout and deletes the tree afterwards
+suite module with a three-minute timeout (extended for the video thread matrix) and deletes the tree afterwards
 (`isolate.py`, `__main__.py`). The desktop suite builds the desk with Kilix 95's
 own modules and never starts a terminal; graphics writes go to a stand-in
 terminal that counts bytes and releases shared-memory names as Kitty would
@@ -95,6 +110,8 @@ terminal that counts bytes and releases shared-memory names as Kitty would
 sandbox, because the sandbox strips `KILIX*` and changes `HOME`. Every
 scenario, and how to read the rectangle and byte counts, is in
 [docs/scenarios.md](docs/scenarios.md).
+The video child is `kilix_bench.video`; its verified consumer reads complete
+shared-memory frames before releasing them.
 
 ## Results
 
@@ -121,6 +138,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 | Document | Contents |
 |---|---|
 | [docs/scenarios.md](docs/scenarios.md) | Every desktop, render, and text scenario, and how damage, scroll and inline bytes are counted |
+| [docs/video.md](docs/video.md) | RGB composition, frame readers, verified transport and decoder thread measurements |
 
 ## Related repositories
 
