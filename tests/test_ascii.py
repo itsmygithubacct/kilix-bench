@@ -52,6 +52,7 @@ class NativeAsciiTests(unittest.TestCase):
             result=json.loads((root/'bench/results/kilix-ascii-latest.json').read_text())
             self.assertEqual(len(result['corpus']),95)
             self.assertEqual(len(result['trials']),5)
+            self.assertLessEqual(result['reference'][0]['max_abs_difference'],1e-3)
             self.assertFalse(result['quality'][0]['all_binary_exact'])
             for row in result['trials']:
                 mode=row['case']
@@ -75,6 +76,7 @@ class NativeAsciiTests(unittest.TestCase):
             general_result=json.loads((root/'bench/results/kilix-expert-latest.json').read_text())
             self.assertEqual(set(general_result['corpus']),set(codes))
             self.assertEqual(general_result['quality'][0]['glyphs'],5)
+            self.assertEqual(general_result['reference'][0]['scalars'],codes)
             timed_bytes=(root/'bench/results/kilix-expert-latest.json').read_bytes()
             subprocess.run(general_command+['--experiment-quality-only'],env=env,check=True,
                            capture_output=True,text=True,timeout=60)

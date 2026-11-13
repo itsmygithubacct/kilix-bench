@@ -1,5 +1,5 @@
 """Braille decomposition entry points; shared protocol lives in decomposition."""
-from kilix_bench.decomposition import quality
+from kilix_bench.decomposition import quality, check_reference
 from kilix_bench import decomposition
 
 

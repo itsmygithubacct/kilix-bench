@@ -76,3 +76,11 @@ For training progress and baseline calibration, add
 `--experiment-quality-only`. It checks the same complete routes, coverage,
 teacher comparisons and previews, with zero timing jobs. Its subject/latest
 filename ends in `-quality`, so it cannot replace the performance result.
+
+Packed one-handle cases are also checked outside timing against an independent
+float64 NumPy evaluation of the packed version 1/2/6 bytes. The sample includes
+spaced corpus positions, the last scalar and both sides of every table route
+change. Braille uses its fixed 37-scalar sample. A maximum absolute coverage
+difference above 1e-3 aborts the run. The report records each checked scalar,
+the maximum difference and the reference source hash. Legacy multi-handle
+Braille parts retain their existing compositional checks.

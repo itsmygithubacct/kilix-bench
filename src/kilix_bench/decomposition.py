@@ -105,6 +105,42 @@ def quality(coverage, target, codes):
                            "coverage_mae": float(mae[i])} for i, code in enumerate(codes)]}
 
 
+REFERENCE_GLYPHS = sorted(set(range(0x2800, 0x2900, 8)) | {0x28FF, 0x2855, 0x28AA, 0x2847, 0x28B8})
+REFERENCE_TOLERANCE = 1e-3
+
+
+def check_reference(case, path, coverage, codes, cell):
+    """Check packed bytes independently, including both sides of route changes."""
+    import numpy as np
+    from kilix_bench.braille_reference import Packed
+    packed = Packed(path.read_bytes())
+    ordered = sorted(codes)
+    positions = {code: i for i, code in enumerate(codes)}
+    if ordered == list(range(0x2800, 0x2900)):
+        selected = set(REFERENCE_GLYPHS)
+    else:
+        selected = {ordered[i] for i in range(0, len(ordered), max(1, len(ordered) // 32))}
+        selected.add(ordered[-1])
+    for i in range(1, len(ordered)):
+        if case['routes'][i] != case['routes'][i-1]:
+            selected.update(ordered[i-1:i+1])
+    w, h = cell
+    worst = 0.0
+    for code in sorted(selected):
+        if packed.route(code) != case['routes'][ordered.index(code)]:
+            raise ValueError('the packed range table disagrees with the declared routes')
+        got = coverage[positions[code]].astype(np.float64)
+        reference = packed.coverage(code, w, h)
+        if not np.isfinite(reference).all():
+            raise ValueError('nonfinite packed reference coverage')
+        worst = max(worst, float(np.abs(got-reference).max()))
+    if worst > REFERENCE_TOLERANCE:
+        raise ValueError(f"{case['name']} {w}x{h}: production coverage is {worst:.2e} from the reference")
+    return {'model': case['name'], 'cell': list(cell), 'glyphs': len(selected),
+            'scalars': sorted(selected), 'format_version': packed.version,
+            'max_abs_difference': worst}
+
+
 def measure(args, *, family="braille"):
     import numpy as np
     paths = inputs(args, family=family)
@@ -144,9 +180,13 @@ def measure(args, *, family="braille"):
         "startup_policy": "no desktop imports, background preparation or persisted atlas; "
                           "opening includes every handle and coverage buffer, excludes glyph inference",
         "job_timeout_seconds": args.job_timeout,
-        "quality": [], "trials": [], "scenarios": [], "artifacts": [],
+        "quality": [], "trials": [], "scenarios": [], "artifacts": [], "reference": [],
+        "reference_policy": "packed one-handle cases checked outside timing against float64 NumPy "
+                            "from packed bytes; spaced corpus sample, last scalar and both sides of "
+                            "every table-route change (37 fixed scalars for Braille); max absolute "
+                            "coverage difference <= 1e-3; legacy multi-handle parts excluded",
         "harness_sources": {name: fonts.digest(Path(__file__).with_name(name)) for name in
-                            ("decomposition.py", "braille.py", "ascii.py", "braille_layouts.py", "fonts.py")},
+                            ("decomposition.py", "braille.py", "ascii.py", "braille_layouts.py", "braille_reference.py", "fonts.py")},
     }
     modes = args.expert_cases.split(",")
     jobs = []
@@ -177,6 +217,9 @@ def measure(args, *, family="braille"):
                 validation, masks = run(case, cell, "validate", count)
                 w, h = cell
                 coverage = np.frombuffer(masks, dtype=np.float32).reshape(count, h, w)
+                if case['kind'] == 'bundle':
+                    result['reference'].append(check_reference(case, paths['model:' + case['members'][0]],
+                                                               coverage, codes, cell))
                 target = np.load(paths[f"target:{w}x{h}"], allow_pickle=False)
                 if target.shape != (count, h, w) or not np.isfinite(target).all() or np.any((target < 0) | (target > 1)):
                     raise ValueError("invalid teacher masks")
