@@ -147,23 +147,19 @@ static void note_sample(GlyphGeom *geom, int x, int y, int w, int h,
     if (y == h - 1) geom->edges |= 8;
 }
 
-static void raster(Engine *e, uint32_t scalar, unsigned char *out, GlyphGeom *geom)
+static void raster(Engine *e, uint32_t scalar, unsigned char *out)
 {
     size_t pixels = (size_t)e->w * e->h;
     e->raster_calls++;
     memset(out, 0, pixels);
-    if (geom) memset(geom, 0, sizeof *geom);
     if (e->net) {
         if (e->coverage(e->net, scalar, e->w, e->h, e->samples,
                         e->coverage_buffer)) fail("Neuronte rasterization failed");
-        if (geom) geom->advance = e->w;
         for (size_t i = 0; i < pixels; i++) {
             float a = e->coverage_buffer[i];
             if (!isfinite(a)) fail("non-finite coverage");
             a = a < 0 ? 0 : a > 1 ? 1 : a;
             out[i] = (unsigned char)(a * 255 + .5f);
-            note_sample(geom, (int)(i % (size_t)e->w), (int)(i / (size_t)e->w),
-                        e->w, e->h, out[i], 1);
         }
         return;
     }
@@ -172,14 +168,6 @@ static void raster(Engine *e, uint32_t scalar, unsigned char *out, GlyphGeom *ge
         fail("missing glyph or FreeType rasterization failure");
     FT_GlyphSlot slot = e->face->glyph;
     FT_Bitmap *b = &slot->bitmap;
-    if (geom) {
-        geom->outline = 1;
-        geom->advance = (int)(slot->advance.x / 64);
-        geom->bitmap_w = (int)b->width;
-        geom->bitmap_h = (int)b->rows;
-        geom->bitmap_left = slot->bitmap_left;
-        geom->bitmap_top = slot->bitmap_top;
-    }
     if (!b->width || !b->rows) return; /* spaces and empty cmap glyphs */
     if (b->pixel_mode != FT_PIXEL_MODE_GRAY || b->num_grays != 256)
         fail("expected an 8-bit grayscale outline raster");
@@ -188,10 +176,41 @@ static void raster(Engine *e, uint32_t scalar, unsigned char *out, GlyphGeom *ge
         for (unsigned x = 0; x < b->width; x++) {
             int dx = slot->bitmap_left + (int)x;
             int dy = e->baseline - slot->bitmap_top + (int)y;
-            int inside = dx >= 0 && dy >= 0 && dx < e->w && dy < e->h;
-            if (!inside) {
-                if (row[x]) e->clipped++;
+            if (dx < 0 || dy < 0 || dx >= e->w || dy >= e->h) {
+                e->clipped += row[x] != 0;
             } else out[(size_t)dy * e->w + dx] = row[x];
+        }
+    }
+}
+
+/* Geometry belongs to validation. Keep its per-pixel branches and bounds
+ * bookkeeping out of the timed raster and cache-miss paths. */
+static void raster_geometry(Engine *e, uint32_t scalar, unsigned char *out, GlyphGeom *geom)
+{
+    raster(e, scalar, out);
+    memset(geom, 0, sizeof *geom);
+    if (e->net) {
+        geom->advance = e->w;
+        for (int y = 0; y < e->h; y++)
+            for (int x = 0; x < e->w; x++)
+                note_sample(geom, x, y, e->w, e->h, out[(size_t)y * e->w + x], 1);
+        return;
+    }
+    FT_GlyphSlot slot = e->face->glyph;
+    FT_Bitmap *b = &slot->bitmap;
+    geom->outline = 1;
+    geom->advance = (int)(slot->advance.x / 64);
+    geom->bitmap_w = (int)b->width;
+    geom->bitmap_h = (int)b->rows;
+    geom->bitmap_left = slot->bitmap_left;
+    geom->bitmap_top = slot->bitmap_top;
+    if (!b->width || !b->rows) return;
+    for (unsigned y = 0; y < b->rows; y++) {
+        const unsigned char *row = b->buffer + (ptrdiff_t)y * b->pitch;
+        for (unsigned x = 0; x < b->width; x++) {
+            int dx = slot->bitmap_left + (int)x;
+            int dy = e->baseline - slot->bitmap_top + (int)y;
+            int inside = dx >= 0 && dy >= 0 && dx < e->w && dy < e->h;
             note_sample(geom, dx, dy, e->w, e->h, row[x], inside);
         }
     }
@@ -220,7 +239,7 @@ static const unsigned char *cached(Engine *e, Cache *c, uint32_t scalar)
         if (entry->used < victim->used) victim = entry;
     }
     c->misses++;
-    raster(e, scalar, victim->mask, NULL);
+    raster(e, scalar, victim->mask);
     victim->scalar = scalar;
     victim->used = ++c->tick;
     return victim->mask;
@@ -330,12 +349,12 @@ int main(int argc, char **argv)
         for (int i = 0; i < capacity; i++) cache.entries[i].mask = cache.storage + i * pixels;
     }
     started = ns(CLOCK_MONOTONIC);
-    raster(&e, scalars[0], mask, NULL);
+    raster(&e, scalars[0], mask);
     uint64_t first_ns = ns(CLOCK_MONOTONIC) - started;
     if (!strcmp(mode, "draw-warm"))
         for (int i = 0; i < count; i++) (void)cached(&e, &cache, scalars[i]);
     if (!strcmp(mode, "raster"))
-        for (int i = 0; i < count; i++) raster(&e, scalars[i], mask, NULL);
+        for (int i = 0; i < count; i++) raster(&e, scalars[i], mask);
     cache.hits = cache.misses = e.raster_calls = e.clipped = 0;
     if (validate || load) calls = count;
     struct rusage batch_before, batch_after;
@@ -346,8 +365,8 @@ int main(int argc, char **argv)
     for (int i = 0; i < calls; i++) {
         uint32_t current = scalars[i % count];
         if (draw) composite(output, cached(&e, &cache, current), e.w, e.h, cols, i % (cols * rows));
-        else raster(&e, current, validate ? output + i * pixels : output,
-                    glyphs ? &glyphs[i] : NULL);
+        else if (validate) raster_geometry(&e, current, output + i * pixels, &glyphs[i]);
+        else raster(&e, current, output);
     }
     uint64_t elapsed = ns(CLOCK_MONOTONIC) - batch_started;
     uint64_t cpu_elapsed = ns(CLOCK_PROCESS_CPUTIME_ID) - cpu_started;
