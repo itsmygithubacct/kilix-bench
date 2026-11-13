@@ -114,7 +114,7 @@ def build_worker(directory):
                         ["pkg-config", "--modversion", "freetype2"], text=True).strip()}
 
 
-def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capacity=None):
+def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capacity=None, second_weights=None):
     corpus = Path(directory) / "corpus.txt"
     corpus.write_text("".join(f"{code:x}\n" for code in scalars), encoding="ascii")
     output = Path(directory) / "pixels.bin"
@@ -124,11 +124,13 @@ def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capa
                str(paths["weights" if engine == "neuronte" else "font"]), mode,
                *map(str, cell), "0", str(int(args.hinting == "native")),
                str(capacity or args.cache_entries), str(calls), *geometry, str(corpus), str(output)]
+    if second_weights is not None:
+        command.append(str(second_weights))
     start = time.perf_counter_ns()
     completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=args.job_timeout)
     wall = time.perf_counter_ns() - start
     data = json.loads(completed.stdout)
-    if mode in ("probe", "nrt-routes", "nrt-open"):
+    if mode in ("probe", "nrt-routes", "nrt-open", "nrt-route-bench"):
         data["worker_wall_ns"] = wall
         return data, b""
     raw = output.read_bytes()

@@ -1,5 +1,8 @@
 # Split-v5 expert protocol
 
+For width-48 versus two-width-24 Braille experiments, see the
+[decomposition protocol](braille.md) and `--braille-experiment`.
+
 ```sh
 PYTHONPATH=src python3 -m kilix_bench --suite neuronte \
   --neuronte-home /path/to/neuronte \

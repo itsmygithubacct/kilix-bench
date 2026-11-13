@@ -22,6 +22,8 @@ CASES = ("coverage", "draw-cold", "draw-warm")
 
 
 def add_arguments(parser):
+    parser.add_argument("--braille-experiment", default="",
+                        help="SHA256-bound Braille decomposition manifest; compare all its cases")
     parser.add_argument("--experts", default="all", help="all, or comma-separated: " +
                         ",".join(item[0] for item in EXPERTS))
     parser.add_argument("--expert-cases", default=",".join(CASES),
@@ -31,6 +33,9 @@ def add_arguments(parser):
 
 
 def inputs(args):
+    if args.braille_experiment:
+        from kilix_bench.braille import inputs as experiment_inputs
+        return experiment_inputs(args)
     paths = fonts.inputs(args, experts=True)
     experts = expert_profile(paths["weights"], args.experts)
     cases = args.expert_cases.split(",")
@@ -74,6 +79,9 @@ def check_trial(row, raw, expected, case, count, calls):
 
 
 def measure(args):
+    if args.braille_experiment:
+        from kilix_bench.braille import measure as experiment_measure
+        return experiment_measure(args)
     paths = inputs(args)
     if args.cpu is not None:
         if args.cpu not in os.sched_getaffinity(0):

@@ -131,6 +131,8 @@ def _fonts(args, kilix_home):
         if args.suite == "neuronte":
             command += ["--experts", args.experts, "--expert-cases", args.expert_cases,
                         "--expert-passes", str(args.expert_passes)]
+            if args.braille_experiment:
+                command += ["--braille-experiment", str(paths["experiment"])]
         else:
             command += ["--font", str(paths["font"]), "--font-license", str(paths["font_license"]),
                         "--corpora", args.corpora, "--raster-calls", str(args.raster_calls),
