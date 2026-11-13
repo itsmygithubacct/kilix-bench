@@ -137,6 +137,8 @@ def _fonts(args, kilix_home):
                 command += ["--ascii-experiment", str(paths["experiment"])]
             if args.expert_experiment:
                 command += ["--expert-experiment", str(paths["experiment"])]
+            if args.experiment_quality_only:
+                command += ["--experiment-quality-only"]
         else:
             command += ["--font", str(paths["font"]), "--font-license", str(paths["font_license"]),
                         "--corpora", args.corpora, "--raster-calls", str(args.raster_calls),

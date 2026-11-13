@@ -119,8 +119,10 @@ def measure(args, *, family="braille"):
     count = len(codes)
     positions = {code: i for i, code in enumerate(codes)}
     rng.shuffle(codes)
+    quality_only = getattr(args, "experiment_quality_only", False)
+    repeats, warmup = (0, 0) if quality_only else (args.repeats, args.warmup)
     result = {
-        "tool": "kilix-bench", "tool_version": "0.2.3", "subject": "kilix-" + family,
+        "tool": "kilix-bench", "tool_version": "0.2.3", "subject": "kilix-" + family + ("-quality" if quality_only else ""),
         "subject_version": "1", "subject_revision": fonts.revision(Path(__file__).parent),
         "started_utc": datetime.now(timezone.utc).isoformat(), "size": args.cells[0],
         "python": platform.python_version(), "machine": platform.machine(),
@@ -131,7 +133,7 @@ def measure(args, *, family="braille"):
                    for key, p in paths.items()},
         "model_cases": manifest["cases"], "teacher": manifest["teacher"],
         "runtime_revision": manifest["runtime_revision"], "seed": args.seed,
-        "repeats": args.repeats, "warmup": args.warmup, "cells": args.cells,
+        "repeats": repeats, "warmup": warmup, "cells": args.cells, "quality_only": quality_only,
         "corpus": codes, "expert_passes": args.expert_passes, "hardware_start": fonts.hardware(),
         "process_policy": "fresh process/handles each job; OS page cache retained; loading, first "
                           "coverage and priming excluded from glyph batches; all cases shuffled each round",
@@ -148,7 +150,7 @@ def measure(args, *, family="braille"):
     }
     modes = args.expert_cases.split(",")
     jobs = []
-    for case in manifest["cases"]:
+    for case in ([] if quality_only else manifest["cases"]):
         jobs.append((case, args.cells[0], "open"))
         if case["kind"] == "bundle":
             jobs.append((case, (2, 2), "route-bench"))
@@ -192,7 +194,7 @@ def measure(args, *, family="braille"):
         quality_path = artifacts / "quality.json"
         quality_path.write_text(json.dumps(result["quality"], indent=2) + "\n")
         quality_path.chmod(0o600)
-        for repeat in range(-args.warmup, args.repeats):
+        for repeat in range(-warmup, repeats):
             order = list(jobs)
             rng.shuffle(order)
             for order_index, (case, cell, mode) in enumerate(order):

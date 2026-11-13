@@ -29,6 +29,8 @@ def add_arguments(parser):
                         help="SHA256-bound ASCII spatial/repertoire manifest; compare all its cases")
     experiments.add_argument("--expert-experiment", default="",
                         help="SHA256-bound decomposition manifest for an explicit expert repertoire")
+    parser.add_argument("--experiment-quality-only", action="store_true",
+                        help="validate a manifest's routes and quality without running timing jobs")
     parser.add_argument("--experts", default="all", help="all, or comma-separated: " +
                         ",".join(item[0] for item in EXPERTS))
     parser.add_argument("--expert-cases", default=",".join(CASES),
@@ -47,6 +49,8 @@ def inputs(args):
     if args.braille_experiment:
         from kilix_bench.braille import inputs as experiment_inputs
         return experiment_inputs(args)
+    if getattr(args, "experiment_quality_only", False):
+        raise ValueError("quality-only requires an experiment manifest")
     paths = fonts.inputs(args, experts=True)
     experts = expert_profile(paths["weights"], args.experts)
     cases = args.expert_cases.split(",")

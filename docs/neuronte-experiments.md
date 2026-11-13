@@ -71,3 +71,8 @@ JSONL and CSV trials, the complete quality record and per-case coverage
 previews are hashed artifacts. The CLI writes separate latest results for
 ASCII, Braille and general expert experiments. Use a separate
 `KILIX_BENCH_HOME` for each concurrent study so results remain attributable.
+
+For training progress and baseline calibration, add
+`--experiment-quality-only`. It checks the same complete routes, coverage,
+teacher comparisons and previews, with zero timing jobs. Its subject/latest
+filename ends in `-quality`, so it cannot replace the performance result.

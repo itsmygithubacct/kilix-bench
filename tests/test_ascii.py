@@ -75,6 +75,16 @@ class NativeAsciiTests(unittest.TestCase):
             general_result=json.loads((root/'bench/results/kilix-expert-latest.json').read_text())
             self.assertEqual(set(general_result['corpus']),set(codes))
             self.assertEqual(general_result['quality'][0]['glyphs'],5)
+            timed_bytes=(root/'bench/results/kilix-expert-latest.json').read_bytes()
+            subprocess.run(general_command+['--experiment-quality-only'],env=env,check=True,
+                           capture_output=True,text=True,timeout=60)
+            q=json.loads((root/'bench/results/kilix-expert-quality-latest.json').read_text())
+            self.assertTrue(q['quality_only'])
+            self.assertEqual(q['trials'],[])
+            self.assertEqual(q['scenarios'],[])
+            self.assertEqual(q['repeats'],0)
+            self.assertEqual(q['quality'],general_result['quality'])
+            self.assertEqual(timed_bytes,(root/'bench/results/kilix-expert-latest.json').read_bytes())
             for broken in ([32,32],[65,32],[True],[0xd800]):
                 path.write_text(json.dumps({**general,'corpus':broken}))
                 with self.assertRaisesRegex(ValueError,'ordered, distinct'):decomposition.read_experiment(path,family='expert')
