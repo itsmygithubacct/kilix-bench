@@ -56,7 +56,7 @@ def add_arguments(parser):
     parser.add_argument("--job-timeout", type=float, default=180, help="seconds allowed for each native batch")
 
 
-def inputs(args):
+def inputs(args, *, experts=False):
     home = Path(args.neuronte_home or os.environ.get("NEURONTE_HOME") or
                 os.environ.get("NEURONTE") or "~/projects/neuronte").expanduser().resolve()
     paths = {
@@ -65,9 +65,11 @@ def inputs(args):
         "font": Path(args.font).expanduser().resolve() if args.font else None,
         "font_license": Path(args.font_license).expanduser().resolve() if args.font_license else None,
     }
+    if experts:
+        paths = {key: paths[key] for key in ("library", "weights")}
     for key, path in paths.items():
         if path is None or not path.is_file():
-            raise ValueError("font suite needs an existing " + key.replace("_", " "))
+            raise ValueError("native suite needs an existing " + key.replace("_", " "))
     if not 1 <= args.repeats <= 10000 or not 0 <= args.warmup <= 100:
         raise ValueError("repeats must be 1..10000; warmup must be 0..100")
     if not 1 <= args.raster_calls <= 1000000 or not 1 <= args.frames <= 500:
@@ -80,7 +82,8 @@ def inputs(args):
     requested = args.corpora.split(",")
     if len(requested) != len(set(requested)):
         raise ValueError("duplicate corpus")
-    profile(digest(paths["weights"]), requested)
+    if not experts:
+        profile(digest(paths["weights"]), requested)
     return paths
 
 
@@ -116,15 +119,17 @@ def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capa
     corpus.write_text("".join(f"{code:x}\n" for code in scalars), encoding="ascii")
     output = Path(directory) / "pixels.bin"
     calls = 80 * 25 * args.frames if mode.startswith("draw-") else args.raster_calls
+    geometry = ("1", "1") if mode.startswith("nrt-") else ("80", "25")
     command = [str(binary), engine, str(paths["library"]),
                str(paths["weights" if engine == "neuronte" else "font"]), mode,
                *map(str, cell), "0", str(int(args.hinting == "native")),
-               str(capacity or args.cache_entries), str(calls), "80", "25", str(corpus), str(output)]
+               str(capacity or args.cache_entries), str(calls), *geometry, str(corpus), str(output)]
     start = time.perf_counter_ns()
     completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=args.job_timeout)
     wall = time.perf_counter_ns() - start
     data = json.loads(completed.stdout)
-    if mode == "probe":
+    if mode in ("probe", "nrt-routes", "nrt-open"):
+        data["worker_wall_ns"] = wall
         return data, b""
     raw = output.read_bytes()
     if data["output_bytes"] != len(raw):

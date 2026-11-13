@@ -7,6 +7,9 @@ native C worker contains both adapters and one compositor. Python orchestrates
 trial pairs, verifies every output and saves records. Python loop and FFI
 dispatch overhead are outside the native batch timing.
 
+For complete split-v5 repertoires, direct float coverage and Neuronte's own
+draw cache, use the separate [Neuronte expert suite](neuronte.md).
+
 ## Run
 
 Dependencies: Linux, a C compiler, `pkg-config`, FreeType development headers, Pillow,

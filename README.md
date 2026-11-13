@@ -5,6 +5,8 @@ redraw, how many bytes the graphics SDK would send for a change, and how a
 full grid of text compares as Kitty cells, Kitty graphics, and Neuronte.
 The font suite compares Neuronte with FreeType in native CPU loops, using
 the same mask cache and compositor for both.
+The Neuronte suite measures each split-v5 expert over its complete trained
+repertoire, separating float coverage, runtime caching and model opening.
 
 Not shipped: a development tool run from a checkout. No Plebian-OS release,
 Kilix or catalog tree references it.
@@ -41,6 +43,8 @@ PYTHONPATH=src python3 -m kilix_bench --suite text
 PYTHONPATH=src python3 -m kilix_bench --suite fonts \
   --neuronte-home /path/to/neuronte \
   --font /path/to/monospace.ttf --font-license /path/to/font-licence.txt
+PYTHONPATH=src python3 -m kilix_bench --suite neuronte \
+  --neuronte-home /path/to/neuronte --cells 8x16,16x32,48x96
 ```
 
 `--suite desktop` is the default and needs `--desktop`. `--suite render` and
@@ -61,6 +65,9 @@ library. It records the exact font, licence, model, library and worker hashes,
 raw paired trials, cache hits/misses, clipped ink, output checksums and PNG
 previews. Its terminal cells use a scalable monospace font. See
 [the font protocol](docs/fonts.md) for controls, limits and interpretation.
+The Neuronte suite uses the same build dependencies without a FreeType font
+or licence input. See [the expert protocol](docs/neuronte.md) for its complete
+repertoires and the difference between runtime and RC9 desktop caches.
 
 The live desktop is not started. Desktop state for the run is a temporary
 directory and is removed when the run finishes.
@@ -78,11 +85,11 @@ directory: the parent stops before starting either suite when it is missing.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--suite desktop\|render\|text\|fonts` | `desktop` | What to measure |
+| `--suite desktop\|render\|text\|fonts\|neuronte` | `desktop` | What to measure |
 | `--desktop PATH` | none | Kilix 95 checkout (desktop suite; must contain `main.py`) |
 | `--kilix-home PATH` | `KILIX_HOME`, else `~/.local/gpu_terminal/sources/kilix` | Kilix checkout with `config/kilix_sdk` |
 | `--width N` / `--height N` | `1920` / `1080` | Frame size |
-| `--repeats N` | `20` for fonts, otherwise `12` | Timed samples per scenario |
+| `--repeats N` | `20` for fonts, `5` for neuronte, otherwise `12` | Timed samples per scenario |
 | `--warmup N` | `2` | Untimed samples first |
 | `KILIX_BENCH_HOME` | `~/.local/gpu_terminal/kilix-bench` | Where results are written |
 
@@ -135,6 +142,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 |---|---|
 | [docs/scenarios.md](docs/scenarios.md) | Every desktop, render, and text scenario, and how damage, scroll and inline bytes are counted |
 | [docs/fonts.md](docs/fonts.md) | Paired Neuronte/FreeType measurements, shared caching, coverage and image validation |
+| [docs/neuronte.md](docs/neuronte.md) | Complete split-v5 expert timings, runtime cache states and RC9 startup boundaries |
 
 ## Related repositories
 

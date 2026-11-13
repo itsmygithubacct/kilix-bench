@@ -16,6 +16,7 @@
 #include <time.h>
 
 typedef struct neuronte neuronte;
+_Static_assert(sizeof(float) == sizeof(uint32_t), "expert outputs require 32-bit floats");
 typedef struct {
     void *module;
     neuronte *net;
@@ -178,6 +179,91 @@ static void composite(unsigned char *frame, const unsigned char *mask,
         }
 }
 
+/* The expert suite uses the public float coverage and draw APIs directly.
+ * Its draw cases deliberately bypass the comparison suite's u8 cache. */
+static void neuronte_case(Engine *e, const char *mode, const uint32_t *scalars,
+                         int count, int calls, const char *path,
+                         uint64_t init_ns, uint64_t init_cpu_ns)
+{
+    if (!e->net) fail("expert cases require Neuronte");
+    if (!strcmp(mode, "nrt-open")) {
+        printf("{\"initialize_ns\":%" PRIu64 ",\"initialize_cpu_ns\":%" PRIu64 "}\n",
+               init_ns, init_cpu_ns);
+        return;
+    }
+    if (!strcmp(mode, "nrt-routes")) {
+        int (*route)(const neuronte *, uint32_t);
+        symbol(e->module, "neuronte_route", &route, sizeof route);
+        printf("{\"routes\":[");
+        for (int i = 0; i < count; i++) {
+            int index = route(e->net, scalars[i]);
+            if (index < 0) fail("cannot route expert scalar");
+            printf("%s%d", i ? "," : "", index);
+        }
+        puts("]}");
+        return;
+    }
+    int draw = !strcmp(mode, "nrt-draw-cold") || !strcmp(mode, "nrt-draw-warm");
+    int validate = !strcmp(mode, "nrt-validate");
+    if (!draw && !validate && strcmp(mode, "nrt-coverage")) fail("unknown expert mode");
+    int (*draw_scalar)(neuronte *, uint32_t *, int, int, int, int, int,
+                       int, int, uint32_t, uint32_t) = NULL;
+    if (draw) symbol(e->module, "neuronte_draw_scalar", &draw_scalar, sizeof draw_scalar);
+    if (calls % count) fail("expert batches must cover complete corpus passes");
+    size_t pixels = (size_t)e->w * e->h;
+    size_t output_bytes = pixels * (validate ? (size_t)count : 1) * sizeof(float);
+    float *output = allocate(output_bytes, 1);
+    uint32_t *canvas = allocate(pixels, sizeof *canvas);
+    uint64_t started = ns(CLOCK_MONOTONIC);
+    if (e->coverage(e->net, scalars[0], e->w, e->h, e->samples, e->coverage_buffer))
+        fail("first expert coverage failed");
+    uint64_t first_ns = ns(CLOCK_MONOTONIC) - started;
+    int prime = !strcmp(mode, "nrt-draw-warm") || !strcmp(mode, "nrt-coverage");
+    started = ns(CLOCK_MONOTONIC);
+    for (int i = 0; prime && i < count; i++) {
+        if (draw) {
+            memset(canvas, 0, pixels * sizeof *canvas);
+            if (draw_scalar(e->net, canvas, e->w, e->w, e->h, 0, 0,
+                            e->w, e->h, scalars[i], UINT32_MAX)) fail("expert cache priming failed");
+        } else if (e->coverage(e->net, scalars[i], e->w, e->h, e->samples, e->coverage_buffer))
+            fail("expert coverage priming failed");
+    }
+    uint64_t prime_ns = ns(CLOCK_MONOTONIC) - started;
+    if (validate) calls = count;
+    uint64_t cpu_started = ns(CLOCK_PROCESS_CPUTIME_ID);
+    started = ns(CLOCK_MONOTONIC);
+    for (int i = 0; i < calls; i++) {
+        if (draw) {
+            memset(canvas, 0, pixels * sizeof *canvas);
+            if (draw_scalar(e->net, canvas, e->w, e->w, e->h, 0, 0,
+                            e->w, e->h, scalars[i % count], UINT32_MAX)) fail("expert drawing failed");
+        } else if (e->coverage(e->net, scalars[i % count], e->w, e->h, e->samples,
+                               output + (validate ? (size_t)i * pixels : 0)))
+            fail("expert coverage failed");
+    }
+    uint64_t elapsed = ns(CLOCK_MONOTONIC) - started;
+    uint64_t cpu_elapsed = ns(CLOCK_PROCESS_CPUTIME_ID) - cpu_started;
+    if (!draw)
+        for (size_t i = 0; i < output_bytes / sizeof(float); i++)
+            if (!isfinite(output[i]) || output[i] < 0 || output[i] > 1)
+                fail("invalid expert coverage");
+    FILE *file = fopen(path, "wb");
+    if (!file || fwrite(draw ? (void *)canvas : (void *)output, 1, output_bytes, file) != output_bytes || fclose(file))
+        fail("cannot write expert pixels");
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage)) fail("cannot read expert process counters");
+    printf("{\"elapsed_ns\":%" PRIu64 ",\"cpu_ns\":%" PRIu64
+           ",\"initialize_ns\":%" PRIu64 ",\"initialize_cpu_ns\":%" PRIu64
+           ",\"first_coverage_ns\":%" PRIu64 ",\"prime_ns\":%" PRIu64
+           ",\"priming_calls\":%d,\"calls\":%d,\"coverage_calls\":%d,\"draw_calls\":%d"
+           ",\"cache_hits\":null,\"cache_misses\":null,\"output_bytes\":%zu"
+           ",\"peak_rss_kib\":%ld,\"minor_faults\":%ld,\"major_faults\":%ld}\n",
+           elapsed, cpu_elapsed, init_ns, init_cpu_ns, first_ns, prime_ns,
+           prime ? count : 0, calls, draw ? 0 : calls, draw ? calls : 0,
+           output_bytes, usage.ru_maxrss, usage.ru_minflt, usage.ru_majflt);
+    free(canvas); free(output);
+}
+
 int main(int argc, char **argv)
 {
     /* engine library asset mode width height samples hinting capacity calls
@@ -204,12 +290,18 @@ int main(int argc, char **argv)
     }
     if (ferror(corpus) || code != EOF || !count) fail("invalid or empty corpus");
     fclose(corpus);
+    uint64_t init_cpu_started = ns(CLOCK_PROCESS_CPUTIME_ID);
     uint64_t started = ns(CLOCK_MONOTONIC);
     open_engine(&e, argv[1], argv[2], argv[3], hinting);
     uint64_t init_ns = ns(CLOCK_MONOTONIC) - started;
+    uint64_t init_cpu_ns = ns(CLOCK_PROCESS_CPUTIME_ID) - init_cpu_started;
     int major = 0, minor = 0, patch = 0;
     if (e.ft) FT_Library_Version(e.ft, &major, &minor, &patch);
     const char *mode = argv[4];
+    if (!strncmp(mode, "nrt-", 4)) {
+        neuronte_case(&e, mode, scalars, count, calls, argv[14], init_ns, init_cpu_ns);
+        goto done;
+    }
     if (!strcmp(mode, "probe")) {
         printf("{\"supported\":[");
         for (int i = 0; i < count; i++) printf("%s%s", i ? "," : "", supported(&e, scalars[i]) ? "true" : "false");

@@ -16,9 +16,10 @@ from kilix_bench.report import render_text, results_dir, write_run
 def _parser():
     parser = argparse.ArgumentParser(prog="kilix-bench")
     parser.add_argument(
-        "--suite", choices=("desktop", "render", "text", "fonts"), default="desktop",
+        "--suite", choices=("desktop", "render", "text", "fonts", "neuronte"), default="desktop",
         help="desktop measures a Kilix 95 desk; render measures the graphics SDK; "
-             "text compares application frame paths; fonts compares Neuronte and FreeType")
+             "text compares application frame paths; fonts compares Neuronte and FreeType; "
+             "neuronte measures every split-v5 expert")
     parser.add_argument("--desktop", default="",
                         help="Path of a Kilix 95 checkout (desktop suite)")
     parser.add_argument("--kilix-home", default="",
@@ -29,6 +30,9 @@ def _parser():
     parser.add_argument("--warmup", type=int, default=2)
     from kilix_bench.fonts import add_arguments
     add_arguments(parser)
+    from kilix_bench.neuronte import add_arguments as expert_arguments
+    expert_arguments(parser)
+    parser.set_defaults(cells=None)
     return parser
 
 
@@ -56,11 +60,14 @@ def _run(command, env, root, timeout=180):
 def main(argv=None):
     args = _parse() if argv is None else _parse_argv(argv)
     if args.repeats is None:
-        args.repeats = 20 if args.suite == "fonts" else 12
+        args.repeats = 20 if args.suite == "fonts" else 5 if args.suite == "neuronte" else 12
+    if args.cells is None:
+        from kilix_bench.fonts import parse_cells
+        args.cells = parse_cells("8x16,16x32,48x96" if args.suite == "neuronte" else "6x12,8x16,10x20")
     kilix_home = args.kilix_home or kilix_home_from_env()
-    if args.suite != "fonts" and (not kilix_home or not os.path.isdir(os.path.join(kilix_home, "config"))):
+    if args.suite not in ("fonts", "neuronte") and (not kilix_home or not os.path.isdir(os.path.join(kilix_home, "config"))):
         raise SystemExit("pass --kilix-home pointing at a Kilix checkout")
-    if args.suite == "fonts":
+    if args.suite in ("fonts", "neuronte"):
         return _fonts(args, kilix_home)
     env, root = sandbox(os.path.abspath(kilix_home))
     src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -98,7 +105,10 @@ def main(argv=None):
 
 
 def _fonts(args, kilix_home):
-    from kilix_bench.fonts import inputs
+    if args.suite == "neuronte":
+        from kilix_bench.neuronte import inputs
+    else:
+        from kilix_bench.fonts import inputs
     try:
         paths = inputs(args)
     except ValueError as error:
@@ -108,20 +118,24 @@ def _fonts(args, kilix_home):
     try:
         src = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-fonts")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-") + args.suite
         artifacts = results_dir() / stamp
         artifacts.mkdir(mode=0o700)
         env["KILIX_BENCH_ARTIFACT_DIR"] = str(artifacts)
         env["NEURONTE_LIBRARY"] = str(paths["library"])
         env["NEURONTE_WEIGHTS"] = str(paths["weights"])
-        command = [sys.executable, "-m", "kilix_bench.fonts", "--font", str(paths["font"]),
-                   "--font-license", str(paths["font_license"]), "--cells",
-                   ",".join(f"{w}x{h}" for w, h in args.cells), "--corpora", args.corpora,
-                   "--raster-calls", str(args.raster_calls), "--frames", str(args.frames),
-                   "--cache-entries", str(args.cache_entries), "--churn-entries", str(args.churn_entries),
-                   "--hinting", args.hinting, "--seed", str(args.seed),
+        command = [sys.executable, "-m", "kilix_bench." + args.suite, "--cells",
+                   ",".join(f"{w}x{h}" for w, h in args.cells), "--seed", str(args.seed),
                    "--job-timeout", str(args.job_timeout),
                    "--repeats", str(args.repeats), "--warmup", str(args.warmup)]
+        if args.suite == "neuronte":
+            command += ["--experts", args.experts, "--expert-cases", args.expert_cases,
+                        "--expert-passes", str(args.expert_passes)]
+        else:
+            command += ["--font", str(paths["font"]), "--font-license", str(paths["font_license"]),
+                        "--corpora", args.corpora, "--raster-calls", str(args.raster_calls),
+                        "--frames", str(args.frames), "--cache-entries", str(args.cache_entries),
+                        "--churn-entries", str(args.churn_entries), "--hinting", args.hinting]
         if args.cpu is not None:
             command += ["--cpu", str(args.cpu)]
         # Each native job has its own 180s bound. A campaign is many jobs.
