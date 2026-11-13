@@ -169,7 +169,11 @@ checkout and `KILIX_BENCH_KITTY` into the child. Neither path is stored.
 That peer is `protocol-fixture`. Its stages are `fixture-only`.
 The numbers from that reply are discarded. `--presentation live` starts Xvfb
 and a new Kitty with software GL, its own instance group, and a clean
-environment. It does not attach to the caller's terminal. A graphics-query
+environment. It does not attach to the caller's terminal. `DBUS_SESSION_BUS_ADDRESS`
+points at a private socket that is never created, so the session bus is not
+autolaunched. The accessibility bridge and desktop portal are turned off.
+The probe stops the Xvfb and Kitty processes it started and removes that
+private directory. A removal failure is reported. A graphics-query
 reply and, when observed, disappearance of the shared-memory name are consumer
 acknowledgements. `session_start_ns` includes terminal setup.
 `frame_enqueue_ns` is the return of `kittyfb_present`. `frame_written_ns` and

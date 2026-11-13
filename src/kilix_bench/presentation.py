@@ -165,6 +165,66 @@ def _stop(process):
         process.wait(timeout=2)
 
 
+def _private_root(root):
+    """Reject every path except one private probe directory."""
+    root = Path(root)
+    prefix = "font-present-"
+    if (not root.is_absolute() or root.name == prefix
+            or not root.name.startswith(prefix) or root.parent == root):
+        raise ValueError("refusing to clean a path that is not a private probe directory")
+    return root
+
+
+def probe_environment(root, display):
+    """Environment for one private probe.
+
+    The session socket is never created. libdbus and GLib then fail the
+    connection instead of falling back to X11 autolaunch. Accessibility and
+    the desktop portal are off so they do not start helpers outside the
+    probe process group.
+    """
+    root = _private_root(root)
+    bus = root / "no-session-bus"
+    if bus.exists():
+        raise ValueError("session bus socket must not exist")
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin"),
+        "HOME": str(root / "home"),
+        "DISPLAY": str(display),
+        "XDG_RUNTIME_DIR": str(root / "runtime"),
+        "LIBGL_ALWAYS_SOFTWARE": "1",
+        "KITTY_DISABLE_WAYLAND": "1",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(bus),
+        "NO_AT_BRIDGE": "1",
+        "GTK_A11Y": "none",
+        "QT_ACCESSIBILITY": "0",
+        "GTK_USE_PORTAL": "0",
+        "GIO_USE_VFS": "local",
+        "GVFS_DISABLE_FUSE": "1",
+    }
+
+
+def release_probe_root(root):
+    """Remove the private probe directory.
+
+    Only the directory this probe created is removed. A failure is raised
+    instead of being ignored. Processes are stopped through the Popen handles
+    the probe already holds.
+    """
+    shutil.rmtree(_private_root(root))
+
+
+def start_isolated(command, root, display, stderr):
+    """Start ``command`` with the private probe environment."""
+    root = _private_root(root)
+    (root / "home").mkdir(mode=0o700, exist_ok=True)
+    (root / "runtime").mkdir(mode=0o700, exist_ok=True)
+    env = probe_environment(root, display)
+    return subprocess.Popen(
+        [str(part) for part in command], cwd=root, env=env,
+        stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
+
+
 def run_live(binary, kitty, timeout=25):
     """Ask a private Kitty, on its own virtual display, to answer the probe."""
     if kitty is None or shutil.which("Xvfb") is None:
@@ -178,8 +238,6 @@ def run_live(binary, kitty, timeout=25):
     display = _free_display()
     root = Path(tempfile.mkdtemp(prefix="font-present-"))
     result = root / "probe.json"
-    runtime = root / "runtime"
-    runtime.mkdir(mode=0o700)
     log = root / "stderr.txt"
     xvfb = kitty_proc = None
     try:
@@ -190,18 +248,11 @@ def run_live(binary, kitty, timeout=25):
             time.sleep(0.4)
             if xvfb.poll() is not None:
                 raise ValueError("virtual display exited")
-            env = {
-                "PATH": os.environ.get("PATH", "/usr/bin"),
-                "HOME": str(root / "home"),
-                "DISPLAY": display,
-                "XDG_RUNTIME_DIR": str(runtime),
-                "LIBGL_ALWAYS_SOFTWARE": "1",
-                "KITTY_DISABLE_WAYLAND": "1",
-            }
-            (root / "home").mkdir(mode=0o700)
             # --session none ignores the program to run. A clean HOME and
             # --config NONE are what keep another session from starting.
-            kitty_proc = subprocess.Popen(
+            # The session bus address points at a socket this process never
+            # creates, so desktop services are not autolaunched.
+            kitty_proc = start_isolated(
                 [str(kitty), "--single-instance=no",
                  "--instance-group", "kilix-bench-font-coverage",
                  "--config", "NONE",
@@ -211,8 +262,7 @@ def run_live(binary, kitty, timeout=25):
                  "-o", "initial_window_height=400",
                  "--class", "KilixBenchProbe",
                  str(binary), "live", str(result)],
-                cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=stream,
-                start_new_session=True)
+                root, display, stream)
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if result.is_file() and result.stat().st_size > 0:
@@ -240,7 +290,7 @@ def run_live(binary, kitty, timeout=25):
     finally:
         _stop(kitty_proc)
         _stop(xvfb)
-        shutil.rmtree(root, ignore_errors=True)
+        release_probe_root(root)
 
 
 def run(mode, directory):

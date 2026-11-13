@@ -2,13 +2,65 @@
 
 import json
 import os
+from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
-from kilix_bench.presentation import build_probe, framebuffer_source, run, run_fixture, run_live, kitty_binary
+from kilix_bench.presentation import (
+    build_probe, framebuffer_source, kitty_binary, probe_environment, release_probe_root,
+    run, run_fixture, run_live, start_isolated,
+)
 from kilix_bench.report import render_text
 from kilix_bench.stages import apply_probe, catalog
+
+
+_HELPER_NAMES = (
+    "at-spi-bus-launcher",
+    "at-spi2-registryd",
+    "xdg-document-portal",
+    "xdg-desktop-portal",
+    "dbus-launch",
+)
+
+
+def helper_snapshot():
+    """Observe directories, helper commands, and portal mounts. Do not stop them."""
+    base = Path(tempfile.gettempdir())
+    names = {path.name for path in base.glob("font-present-*")} if base.is_dir() else set()
+    commands = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if any(name in command for name in _HELPER_NAMES):
+            commands[int(entry.name)] = command[:200]
+    mounts = []
+    try:
+        for line in Path("/proc/self/mountinfo").read_text(errors="replace").splitlines():
+            fields = line.split()
+            if len(fields) < 5:
+                continue
+            point = fields[4]
+            if "font-present-" in point or "fuse.portal" in line:
+                mounts.append(point)
+    except OSError:
+        pass
+    return names, commands, set(mounts)
+
+
+def assert_no_new_helpers(test, before):
+    names, commands, mounts = helper_snapshot()
+    new_pids = set(commands) - set(before[1])
+    details = [f"{pid} {commands[pid]}" for pid in sorted(new_pids)]
+    test.assertEqual(names - before[0], set(), "private directory left behind")
+    test.assertEqual(new_pids, set(), "new desktop helper: " + "; ".join(details))
+    test.assertEqual(mounts - before[2], set(), "new portal mount")
 
 
 def assert_hardware_unavailable(test, stages):
@@ -122,7 +174,9 @@ class ProbeTests(unittest.TestCase):
     def test_private_kitty_ack_does_not_claim_gpu_or_scanout(self):
         if kitty_binary() is None or shutil.which("Xvfb") is None:
             self.skipTest("private Kitty and Xvfb required")
+        before = helper_snapshot()
         record = run_live(self.binary, kitty_binary(), timeout=25)
+        assert_no_new_helpers(self, before)
         encoded = json.dumps(record)
         self.assertNotIn(str(os.path.expanduser("~")), encoded)
         for key in ("display_latency", "scanout", "gpu_latency"):
@@ -179,7 +233,9 @@ class ProbeTests(unittest.TestCase):
         self.assertIn(provenance["kitty_framebuffer_revision"], text)
         if kitty_binary() is None or shutil.which("Xvfb") is None:
             return
+        before = helper_snapshot()
         live = run("live", self.directory.name)
+        assert_no_new_helpers(self, before)
         kitty = live["provenance"]["kitty"]
         self.assertEqual(kitty["name"], "kitty")
         self.assertEqual(len(kitty["sha256"]), 64)
@@ -194,6 +250,74 @@ class ProbeTests(unittest.TestCase):
             "presentation": live,
         })
         self.assertIn("kitty kitty " + kitty["sha256"], rendered)
+
+
+class IsolationTests(unittest.TestCase):
+    def test_fake_launcher_receives_only_the_isolated_environment(self):
+        outside = Path(tempfile.mkdtemp(prefix="launcher-check-"))
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        script = outside / "launcher.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "exec /usr/bin/printenv -0 > \"$1\"\n",
+            encoding="utf-8")
+        script.chmod(0o700)
+        marker = outside / "env.bin"
+        root = Path(tempfile.mkdtemp(prefix="font-present-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        log = outside / "stderr.txt"
+        with log.open("w", encoding="utf-8") as stream:
+            launched = start_isolated(
+                [str(script), str(marker)], root, ":41", stream)
+        launched.wait(timeout=5)
+        self.assertEqual(launched.returncode, 0)
+        seen = {}
+        for item in marker.read_bytes().split(b"\0"):
+            if not item:
+                continue
+            key, value = item.split(b"=", 1)
+            seen[key.decode()] = value.decode()
+        # The shell records its working directory. The probe does not pass PWD.
+        self.assertEqual(seen.pop("PWD", None), str(root))
+        expected = probe_environment(root, ":41")
+        self.assertEqual(seen, expected)
+        address = seen["DBUS_SESSION_BUS_ADDRESS"]
+        bus = Path(address.removeprefix("unix:path="))
+        self.assertEqual(bus, root / "no-session-bus")
+        self.assertFalse(bus.exists())
+        self.assertNotIn("autolaunch", address)
+        caller = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+        if caller:
+            self.assertNotEqual(address, caller)
+            self.assertNotIn(caller, json.dumps(seen))
+        self.assertEqual(seen["NO_AT_BRIDGE"], "1")
+        self.assertEqual(seen["GTK_A11Y"], "none")
+        self.assertEqual(seen["QT_ACCESSIBILITY"], "0")
+        self.assertEqual(seen["GTK_USE_PORTAL"], "0")
+        self.assertEqual(seen["GIO_USE_VFS"], "local")
+        self.assertEqual(seen["GVFS_DISABLE_FUSE"], "1")
+        release_probe_root(root)
+        self.assertFalse(root.exists())
+        blocked = Path(tempfile.mkdtemp(prefix="font-present-"))
+        (blocked / "no-session-bus").write_text("present", encoding="utf-8")
+        self.addCleanup(shutil.rmtree, blocked)
+        with self.assertRaisesRegex(ValueError, "must not exist"):
+            probe_environment(blocked, ":41")
+
+    def test_directory_cleanup_reports_a_removal_failure(self):
+        root = Path(tempfile.mkdtemp(prefix="font-present-"))
+        blocked = root / "runtime"
+        blocked.mkdir()
+        blocked.chmod(0)
+        try:
+            with self.assertRaises(OSError):
+                release_probe_root(root)
+            self.assertTrue(root.is_dir())
+        finally:
+            blocked.chmod(0o700)
+            shutil.rmtree(root)
+        with self.assertRaisesRegex(ValueError, "private probe"):
+            release_probe_root(Path("/tmp"))
 
 
 if __name__ == "__main__":
