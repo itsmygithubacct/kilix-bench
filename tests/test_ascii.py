@@ -13,6 +13,41 @@ from kilix_bench import ascii, decomposition, fonts
 from kilix_bench.report import assert_no_local_paths
 
 
+class ReleasedAsciiTests(unittest.TestCase):
+    def test_prepare_preserves_release_assets_and_teacher(self):
+        from kilix_bench.ascii_prepare import prepare
+        home = Path(os.environ.get('NEURONTE_HOME', '/nonexistent'))
+        record = home / 'weights/neuronte-ascii-next.validation.json'
+        if not record.is_file():
+            self.skipTest('next ASCII release assets required')
+        with tempfile.TemporaryDirectory(prefix='ascii-release-') as temporary:
+            root = Path(temporary)
+            path = prepare(root/'experiment', home)
+            manifest, paths = ascii.read_experiment(path)
+            self.assertEqual(len(manifest['cases']), 6)
+            self.assertEqual(set(manifest['targets']), {'8x16', '16x32', '48x96'})
+            evidence = json.loads(record.read_text())
+            self.assertEqual(fonts.digest(path.parent/'teacher.npy'), evidence['teacher_sha256'])
+            self.assertEqual(manifest['cases'][2]['routes'].count(0), 23)
+            for asset in manifest['models'].values():
+                self.assertEqual((path.parent/asset['file']).read_bytes(),
+                                 (home/'weights'/asset['file']).read_bytes())
+            for target in manifest['targets'].values():
+                array = np.load(path.parent/target['file'], allow_pickle=False)
+                self.assertEqual(array.shape[0], 95)
+                self.assertTrue(np.isfinite(array).all())
+            with self.assertRaises(FileExistsError):
+                prepare(path.parent, home)
+            broken = root/'broken-runtime/weights'
+            broken.mkdir(parents=True)
+            for filename in [a['file'] for a in manifest['models'].values()] + [record.name, 'SHA256SUMS']:
+                shutil.copyfile(home/'weights'/filename, broken/filename)
+            (broken/'neuronte-ascii-v0.nrt').write_bytes(b'changed release')
+            with self.assertRaisesRegex(ValueError, 'release SHA256 mismatch'):
+                prepare(root/'must-not-exist', broken.parent)
+            self.assertFalse((root/'must-not-exist').exists())
+
+
 class QualityTests(unittest.TestCase):
     def test_character_confusion_and_firm_errors_are_reported(self):
         target=np.zeros((3,4,2),dtype=np.float32)

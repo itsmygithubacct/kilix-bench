@@ -84,3 +84,30 @@ change. Braille uses its fixed 37-scalar sample. A maximum absolute coverage
 difference above 1e-3 aborts the run. The report records each checked scalar,
 the maximum difference and the reference source hash. Legacy multi-handle
 Braille parts retain their existing compositional checks.
+
+## Packaged ASCII models
+
+The ASCII release includes a four-H64 character split and a two-H64 top/bottom
+model. Prepare their comparison from a Neuronte checkout containing
+`weights/neuronte-ascii-next.validation.json`:
+
+```sh
+python3 -m kilix_bench.ascii_prepare /path/to/new-ascii-experiment \
+  --neuronte-home /path/to/neuronte
+python3 -m kilix_bench --suite neuronte --neuronte-home /path/to/neuronte \
+  --ascii-experiment /path/to/new-ascii-experiment/manifest.json \
+  --cells 8x16,16x32,48x96 --warmup 1 --repeats 10 --expert-passes 4 --cpu 3
+```
+
+The first command verifies release hashes, rebuilds and verifies the qualified
+teacher, and copies six exact model files into a new directory. The cases are
+the original standalone ASCII expert, original split-v5, and each replacement
+in standalone and complete-font form. Their routes are checked from the packed
+bytes. Preparation refuses to overwrite an existing directory.
+
+This measures the packaged seed-0 models. The two-seed selection campaign and
+additional 19-size qualification are recorded in the release model card and
+validation file; three benchmark sizes alone cannot replace those checks.
+The complete replacement bundles retain the original fallback expert, so their
+storage and opening cost differ from the standalone files. Keep that distinction
+when comparing speed, size and cache behavior.
