@@ -80,6 +80,13 @@ rendering quality. No font fallback or substitute box is timed.
 
 `NEURONTE_LIBRARY` and `NEURONTE_WEIGHTS` override assets under
 `--neuronte-home`, `NEURONTE_HOME` or `NEURONTE`. Every worker is a fresh process.
+Fetch current development refs before selecting Neuronte, and use a clean,
+isolated checkout of the revision being tested. Rebuild that checkout with
+`make -B build/libneuronte.so` before the campaign. The report records the
+library checkout revision separately from the weights checkout revision;
+installed assets outside Git have no checkout revision. These identify source
+locations, not proof that an existing binary was rebuilt. Preserve the build
+log and verify the recorded library hash against the freshly built file.
 Untimed trial pairs warm the operating environment, not a cache shared between
 workers. Compilation, validation, hashes and PNG encoding are outside native
 timed regions. Worker compiler flags, worker/source hashes, library/font hashes,

@@ -221,7 +221,8 @@ def measure(args):
                       "terminal presentation or display latency. Different font designs; no pixel-accuracy ranking.",
               "weights_profile": profile_name, "assets": {key: {"name": p.name, "sha256": digest(p), "bytes": p.stat().st_size}
                                                            for key, p in paths.items()},
-              "neuronte_revision": revision(paths["weights"].parent),
+              "neuronte_revision": revision(paths["library"].parent),
+              "neuronte_weights_revision": revision(paths["weights"].parent),
               "hardware_start": hardware(), "seed": args.seed, "repeats": args.repeats, "warmup": args.warmup,
               "cells": args.cells, "hinting": args.hinting, "job_timeout_seconds": args.job_timeout,
               "cache_policy": "shared four-way set-associative LRU",

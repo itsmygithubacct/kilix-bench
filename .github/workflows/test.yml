@@ -12,7 +12,7 @@ jobs:
       - name: Fetch the selected Neuronte runtime
         run: |
           git init -q /tmp/neuronte-test
-          git -C /tmp/neuronte-test fetch -q --depth 1 https://github.com/itsmygithubacct/neuronte.git 08c9ef21fafa3ad6e7e859ce178efd61d46100f4
+          git -C /tmp/neuronte-test fetch -q --depth 1 https://github.com/itsmygithubacct/neuronte.git f00ad8e0b5fc79e8d37bc76fceaa34fedb854446
           git -C /tmp/neuronte-test checkout -q --detach FETCH_HEAD
           make -C /tmp/neuronte-test build/libneuronte.so
       - name: Python and native integration tests
