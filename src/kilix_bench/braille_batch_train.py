@@ -189,6 +189,7 @@ def main():
         for seed, state in saved['rng'].items():
             generators[seed].set_state(state.cpu())
         first = saved['step']
+        values = saved['losses']
     loss_fn = lambda *values: losses(torch, *values)
     if args.compile:
         loss_fn = torch.compile(loss_fn, fullgraph=True)
@@ -224,6 +225,7 @@ def main():
             temporary = ckpt.with_suffix('.tmp')
             torch.save({'identity': identity, 'step': step+1, 'parameters': [p.detach() for p in weights+biases],
                         'optimizer': opt.state_dict(), 'scheduler': sched.state_dict(),
+                        'losses': values,
                         'rng': {s: gen.get_state() for s, gen in generators.items()}}, temporary)
             temporary.replace(ckpt)
     for m, (part, seed) in enumerate(members):
