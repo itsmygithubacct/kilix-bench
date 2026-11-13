@@ -157,6 +157,65 @@ def prepare(directory, runtime, cells, seeds, spatial=False, fine=False):
     return path
 
 
+def prepare_production(directory, runtime, cells, entries):
+    """An experiment of already packed files, measured through the public API.
+
+    entries are (name, path, route): each file is copied unchanged and must
+    send every Braille scalar to member `route` by its own range table (0
+    for a standalone net). Members are version 1 or version 6 nets."""
+    import numpy as np
+    from kilix_bench.braille_reference import Packed, Tiled
+    directory, runtime = Path(directory).resolve(), Path(runtime).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(runtime / "train"))
+    import glyphs
+    models, cases = {}, []
+    for name, source, route in entries:
+        raw = Path(source).read_bytes()
+        packed = Packed(raw)
+        if any(packed.route(c) != route for c in range(0x2800, 0x2900)):
+            raise ValueError(f"{name}: Braille does not route to member {route}")
+        net = packed.members[route]
+        nets = net.nets if isinstance(net, Tiled) else [net]
+        widths = [n.hidden for n in nets]
+        path = directory / (name + ".nrt")
+        path.write_bytes(raw)
+        models[name] = {"file": path.name, "sha256": digest(path), "bytes": len(raw),
+                        "source_name": Path(source).name}
+        entry = {"name": name, "members": [name], "kind": "bundle", "production": True,
+                 "format_version": packed.version, "routes": [route] * 256, "seed": None,
+                 "gate_width": 0, "hidden_widths": widths,
+                 "parameters": sum(2*h*h+94*h+1 for h in widths)}
+        if isinstance(net, Tiled):
+            entry["tiled"] = {"columns": net.xe, "rows": net.ye, "nets": len(net.nets),
+                              "tiles": [list(t) for t in net.tiles]}
+        cases.append(entry)
+    targets = {}
+    for cell in cells:
+        name = f"truth-{cell[0]}x{cell[1]}.npy"
+        path = directory / name
+        np.save(path, target_masks(glyphs, cell), allow_pickle=False)
+        targets[f"{cell[0]}x{cell[1]}"] = {"file": name, "sha256": digest(path)}
+    manifest = {"schema": "kilix-bench.braille-experiment/v1", "runtime_revision": revision(runtime),
+                "corpus": list(range(0x2800, 0x2900)), "models": models, "cases": cases,
+                "training_models": {}, "targets": targets,
+                "teacher": {"grid": 256, "grid_dtype": "float16", "supersampling": 8,
+                            "tau": .15, "dot_radius": glyphs.BRAILLE_R,
+                            "glyphs_sha256": digest(runtime / "train/glyphs.py")},
+                "preparer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    path = directory / "manifest.json"
+    path.write_text(json.dumps(manifest, indent=2) + "\n")
+    return path
+
+
+def _production_entry(text):
+    name, _, rest = text.partition("=")
+    source, _, route = rest.rpartition(":")
+    if not name or not source or not route.isdigit():
+        raise argparse.ArgumentTypeError("expected NAME=FILE.nrt:ROUTE")
+    return name, Path(source), int(route)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
@@ -166,7 +225,13 @@ def main():
     parser.add_argument("--spatial", action="store_true",
                         help="compare columns/rows at width 24 and four width-12 quadrants")
     parser.add_argument("--fine", action="store_true", help="also compare 8x6, 12x4, 24x2 and 48x1 spatial experts")
+    parser.add_argument("--production", type=_production_entry, action="append", default=[],
+                        metavar="NAME=FILE.nrt:ROUTE",
+                        help="measure these packed files unchanged through the public API instead of training outputs")
     args = parser.parse_args()
+    if args.production:
+        print(prepare_production(args.directory, args.neuronte_home, args.cells, args.production))
+        return
     print(prepare(args.directory, args.neuronte_home, args.cells, [int(s) for s in args.seeds.split(",")], args.spatial, args.fine))
 
 

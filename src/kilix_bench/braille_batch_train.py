@@ -108,7 +108,12 @@ def main():
     parser.add_argument('--compile', action='store_true')
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--width', type=int,
+                        help='hidden width for every member (default: the layout width)')
+    parser.add_argument('--parts', help='comma-separated subset of the layout parts to train')
     args = parser.parse_args()
+    if args.width is not None and not 1 <= args.width <= 1024:
+        parser.error('width must be from 1 to 1024')
     import numpy as np
     import torch
     torch.set_num_threads(1)
@@ -126,11 +131,17 @@ def main():
     import strokes
     seeds = [int(s) for s in args.seeds.split(',')]
     parts = [part for part in LAYOUTS[args.layout] if 1 << REGIONS[part][0].bit_count() == args.patterns]
+    if args.parts is not None:
+        chosen = args.parts.split(',')
+        if len(set(chosen)) != len(chosen) or set(chosen) - set(parts):
+            parser.error(f'parts must be distinct members of {parts}')
+        parts = [part for part in parts if part in chosen]
     members = [(part, seed) for seed in seeds for part in parts]
     if not members or len(set(seeds)) != len(seeds):
         parser.error('empty group or duplicate seeds')
     args.directory.mkdir(parents=True, exist_ok=True)
-    width, count, g, n = WIDTHS[args.layout], len(members), args.patterns, 256
+    width = WIDTHS[args.layout] if args.width is None else args.width
+    count, g, n = len(members), args.patterns, 256
     def sha(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
     sources = {p: sha(home/p) for p in glyphs.sources('braille') + ['train/train.py', 'train/checkpoint.py', 'font/code-masks.txt']}
@@ -176,7 +187,10 @@ def main():
     opt = torch.optim.Adam(weights+biases, lr=.002)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.steps)
     first = 0
-    ckpt = args.directory / f'{args.layout}-g{g}.pt'
+    # Overrides get their own checkpoint; the default name is unchanged.
+    suffix = '' if args.width is None and args.parts is None else f'-w{width}-' + hashlib.sha256(
+        ','.join(parts).encode()).hexdigest()[:8]
+    ckpt = args.directory / f'{args.layout}-g{g}{suffix}.pt'
     if args.resume:
         saved = torch.load(ckpt, weights_only=False, map_location=args.device)
         if saved['identity'] != identity:

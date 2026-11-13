@@ -83,6 +83,28 @@ def quality(coverage, target, codes):
                            "coverage_mae": float(mae[i])} for i, code in enumerate(codes)]}
 
 
+REFERENCE_GLYPHS = sorted(set(range(0x2800, 0x2900, 8)) | {0x28FF, 0x2855, 0x28AA, 0x2847, 0x28B8})
+REFERENCE_TOLERANCE = 1e-3
+
+
+def check_reference(case, path, coverage, codes, cell):
+    """Production coverage against an independent evaluation of the packed file."""
+    import numpy as np
+    from kilix_bench.braille_reference import Packed
+    packed = Packed(path.read_bytes())
+    w, h = cell
+    worst = 0.0
+    for code in REFERENCE_GLYPHS:
+        if packed.route(code) != case["routes"][code - 0x2800]:
+            raise ValueError("the packed range table disagrees with the declared routes")
+        got = coverage[codes.index(code)].astype(np.float64)
+        worst = max(worst, float(np.abs(got - packed.coverage(code, w, h)).max()))
+    if worst > REFERENCE_TOLERANCE:
+        raise ValueError(f"{case['name']} {w}x{h}: production coverage is {worst:.2e} from the reference")
+    return {"model": case["name"], "cell": list(cell), "glyphs": len(REFERENCE_GLYPHS),
+            "format_version": packed.version, "max_abs_difference": worst}
+
+
 def measure(args):
     import numpy as np
     paths = inputs(args)
@@ -118,9 +140,13 @@ def measure(args):
         "startup_policy": "no desktop imports, background preparation or persisted atlas; "
                           "opening includes every handle and coverage buffer, excludes glyph inference",
         "job_timeout_seconds": args.job_timeout,
-        "quality": [], "trials": [], "scenarios": [], "artifacts": [],
+        "quality": [], "trials": [], "scenarios": [], "artifacts": [], "reference": [],
+        "reference_policy": "every packed case's validation coverage is compared, outside timing, "
+                            "with braille_reference.py (float64 NumPy from the packed bytes) on "
+                            f"{len(REFERENCE_GLYPHS)} glyphs per cell; at most {REFERENCE_TOLERANCE} apart",
         "harness_sources": {name: fonts.digest(Path(__file__).with_name(name)) for name in
-                            ("braille.py", "braille_prepare.py", "braille_train.py", "braille_batch_train.py", "braille_layouts.py", "fonts.py")},
+                            ("braille.py", "braille_prepare.py", "braille_train.py", "braille_batch_train.py", "braille_layouts.py",
+                             "braille_reference.py", "fonts.py")},
     }
     modes = args.expert_cases.split(",")
     jobs = []
@@ -154,6 +180,9 @@ def measure(args):
                 target = np.load(paths[f"target:{w}x{h}"], allow_pickle=False)
                 if target.shape != (256, h, w) or not np.isfinite(target).all() or np.any((target < 0) | (target > 1)):
                     raise ValueError("invalid teacher masks")
+                if case["kind"] == "bundle":
+                    result["reference"].append(check_reference(case, paths["model:" + case["members"][0]],
+                                                               coverage, codes, cell))
                 score = quality(coverage, target[np.asarray(codes) - 0x2800], codes)
                 score.update(model=name, cell=list(cell), coverage_sha256=validation["output_sha256"])
                 result["quality"].append(score)
