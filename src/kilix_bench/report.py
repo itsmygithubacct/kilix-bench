@@ -96,6 +96,13 @@ def render_text(payload):
             "compose times are the PIL redraw. They do not include Kitty."),
         "",
     ]
+    stages = payload.get("stages") or []
+    if stages:
+        lines.append("stages")
+        for stage in stages:
+            lines.append("  {id:<24} {status}".format(
+                id=stage["id"], status=stage["status"]))
+        lines.append("")
     for row in payload["scenarios"]:
         lines.append(
             "{name:<22} median {median:8.3f} ms   "

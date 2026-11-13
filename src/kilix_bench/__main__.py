@@ -97,10 +97,51 @@ def main(argv=None):
     return 0
 
 
+def _font_command(args, faces):
+    command = [sys.executable, "-m", "kilix_bench.fonts"]
+    if args.font_manifest:
+        command += ["--font-manifest", str(Path(args.font_manifest).expanduser().resolve())]
+    else:
+        command += ["--font", str(faces[0].path), "--font-license", str(faces[0].license_path)]
+        if args.font_license_name:
+            command += ["--font-license-name", args.font_license_name]
+        for face in faces[1:]:
+            command += [
+                "--coverage-font", f"{face.id}={face.path}",
+                "--coverage-license", f"{face.id}={face.license_path}",
+                "--coverage-license-name", f"{face.id}={face.license_name}",
+                "--coverage-pitch", f"{face.id}={face.pitch}",
+            ]
+    geometry = "none" if not args.geometry_cells else ",".join(
+        f"{width}x{height}" for width, height in args.geometry_cells)
+    command += [
+        "--cells", ",".join(f"{width}x{height}" for width, height in args.cells),
+        "--geometry-cells", geometry,
+        "--geometry", args.geometry,
+        "--cases", ",".join(args.cases),
+        "--presentation", args.presentation,
+        "--corpora", args.corpora,
+        "--raster-calls", str(args.raster_calls),
+        "--frames", str(args.frames),
+        "--cache-entries", str(args.cache_entries),
+        "--churn-entries", str(args.churn_entries),
+        "--hinting", args.hinting,
+        "--seed", str(args.seed),
+        "--job-timeout", str(args.job_timeout),
+        "--repeats", str(args.repeats),
+        "--warmup", str(args.warmup),
+    ]
+    if args.neuronte_home:
+        command += ["--neuronte-home", str(Path(args.neuronte_home).expanduser().resolve())]
+    if args.cpu is not None:
+        command += ["--cpu", str(args.cpu)]
+    return command
+
+
 def _fonts(args, kilix_home):
     from kilix_bench.fonts import inputs
     try:
-        paths = inputs(args)
+        paths, faces = inputs(args)
     except ValueError as error:
         raise SystemExit(str(error)) from error
     # The CPU font comparison needs no running host or state library.
@@ -114,21 +155,28 @@ def _fonts(args, kilix_home):
         env["KILIX_BENCH_ARTIFACT_DIR"] = str(artifacts)
         env["NEURONTE_LIBRARY"] = str(paths["library"])
         env["NEURONTE_WEIGHTS"] = str(paths["weights"])
-        command = [sys.executable, "-m", "kilix_bench.fonts", "--font", str(paths["font"]),
-                   "--font-license", str(paths["font_license"]), "--cells",
-                   ",".join(f"{w}x{h}" for w, h in args.cells), "--corpora", args.corpora,
-                   "--raster-calls", str(args.raster_calls), "--frames", str(args.frames),
-                   "--cache-entries", str(args.cache_entries), "--churn-entries", str(args.churn_entries),
-                   "--hinting", args.hinting, "--seed", str(args.seed),
-                   "--job-timeout", str(args.job_timeout),
-                   "--repeats", str(args.repeats), "--warmup", str(args.warmup)]
-        if args.cpu is not None:
-            command += ["--cpu", str(args.cpu)]
-        # Each native job has its own 180s bound. A campaign is many jobs.
+        # The sandbox replaces HOME and drops KITTY_* and KILIX*. The probe
+        # still needs those two host tools, and neither path is recorded.
+        if args.presentation != "off":
+            from kilix_bench.presentation import framebuffer_source, kitty_binary
+            source = framebuffer_source()
+            kitty = kitty_binary()
+            if source is not None:
+                env["KITTY_FRAMEBUFFER_HOME"] = str(source)
+            if kitty is not None:
+                env["KILIX_BENCH_KITTY"] = str(kitty)
+        command = _font_command(args, faces)
+        # Each native job has its own timeout. A campaign is many jobs.
         payload = _run(command, env, root, timeout=None)
         payload["artifact_directory"] = artifacts.name
-        forbidden = (str(Path.home()), *(str(path) for path in paths.values()))
-        stamped, _, text = write_run(payload, forbidden=forbidden)
+        forbidden = [str(Path.home()), *(str(path) for path in paths.values())]
+        for face in faces:
+            forbidden.extend((str(face.path), str(face.license_path)))
+        if args.font_manifest:
+            forbidden.append(str(Path(args.font_manifest).expanduser().resolve()))
+        if args.neuronte_home:
+            forbidden.append(str(Path(args.neuronte_home).expanduser().resolve()))
+        stamped, _, text = write_run(payload, forbidden=tuple(forbidden))
         sys.stdout.write(render_text(payload))
         sys.stdout.write(f"\nresults {stamped}\ntext {text}\nartifacts {artifacts}\n")
         return 0

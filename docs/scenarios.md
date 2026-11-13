@@ -92,3 +92,13 @@ its place. The graphics rows are the Kitty protocol Kilix uses when the
 application owns the pixels. Neuronte and the bitmap font fill those
 pixels. Sixel is the other protocol that carries a pixel frame. A Neuronte
 time at 8×16 uses the library's automatic sample count, which is 2.
+
+The text and render consumers count bytes and release shared-memory names
+inside the writing process. That is application and protocol cost. It is not
+a separate terminal acknowledgement, and it is not GPU or scanout time. The
+font suite can run a separate probe: `fixture` is an in-process reply, and
+`live` is a private Kitty on its own virtual display. A live shared-memory
+unlink is that Kitty reading the object. The font result's stage list keeps
+GPU upload, GPU execution, SDF atlas construction, compositor present, and
+scanout marked unavailable. Software GL on a virtual display does not turn
+the probe into a display-latency measurement.

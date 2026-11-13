@@ -59,7 +59,12 @@ The font suite needs a C compiler, `pkg-config`, FreeType development headers
 and Pillow (`pip install '.[fonts]'`). It requires no Kilix checkout or state
 library. It records the exact font, licence, model, library and worker hashes,
 raw paired trials, cache hits/misses, clipped ink, output checksums and PNG
-previews. Its terminal cells use a scalable monospace font. See
+previews. Its primary face is a scalable monospace font. Optional coverage
+faces are fingerprinted the same way and are used only when the primary face
+has no cmap entries for a corpus. Cell geometry and seam fixtures are
+inspection records, not a quality ranking. A stage list states which
+raster, cache, protocol, and consumer steps ran, and which GPU and scanout
+steps are unavailable. See
 [the font protocol](docs/fonts.md) for controls, limits and interpretation.
 
 The live desktop is not started. Desktop state for the run is a temporary

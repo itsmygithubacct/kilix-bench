@@ -281,7 +281,7 @@ def measure(args):
     home = os.environ.get("KILIX_HOME", "")
     return {
         "tool": "kilix-bench",
-        "tool_version": "0.2.3",
+        "tool_version": "0.2.4",
         "subject": "kilix-render",
         "subject_version": _version(home),
         "subject_revision": _revision(home),

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from kilix_bench.font_geometry import analyze
 from kilix_bench.font_profiles import CORPORA, PROFILES, profile
 from kilix_bench.fonts import (
     add_arguments, build_worker, digest, inputs, paired_ratio, parse_cells,
@@ -125,6 +126,32 @@ class NativeFontTests(unittest.TestCase):
         self.assertEqual(row["cache_hits"], 0)
         self.assertGreater(row["elapsed_ns"], 0)
         self.assertGreater(row["initialize_ns"], 0)
+
+    def test_missing_braille_sextant_and_octant_are_not_timed(self):
+        codes = [0x2800, 0x28FF, 0x1FB00, 0x1CD00]
+        data, _ = self.run_font("probe", codes)
+        self.assertEqual(len(data["supported"]), len(codes))
+        self.assertTrue(data["fixed_width"])
+        if any(data["supported"]):
+            self.skipTest("this font has some of the extended corpora")
+        for code in codes:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.run_font("raster", [code])
+
+    def test_box_and_block_validation_records_geometry_without_ranking(self):
+        codes = [0x2500, 0x2502, 0x2588, 0x2580]
+        row, masks = self.run_font("validate", codes)
+        glyphs = row["glyphs"]
+        summary, _rows, _observed = analyze("box", (8, 16), codes, {
+            "freetype": {"masks": masks, "glyphs": glyphs},
+            "neuronte": {"masks": masks, "glyphs": glyphs},
+        })
+        self.assertEqual(summary["engines"]["freetype"]["clipped_ink_samples"], row["clipped_ink_samples"])
+        self.assertIsNone(summary["comparison"]["quality_rank"])
+        self.assertIsNone(summary["comparison"]["similarity_winner"])
+        self.assertTrue(summary["comparison"]["pixel_equivalent"])
+        self.assertIn("not a quality ranking", summary["comparison"]["note"].lower())
+        self.assertTrue(all("outline" in glyph and "edges" in glyph for glyph in glyphs))
 
     def test_corrupt_font_never_produces_a_timing_record(self):
         broken = Path(self.scratch.name) / "broken.ttf"

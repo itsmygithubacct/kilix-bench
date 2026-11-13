@@ -19,13 +19,34 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
+from kilix_bench import __version__
+from kilix_bench.font_coverage import coverage_plan, resolve_faces
+from kilix_bench.font_geometry import analyze, write_pair
 from kilix_bench.font_profiles import CORPORA, profile
+from kilix_bench.presentation import public_text, run as run_presentation
 from kilix_bench.report import scenario
+from kilix_bench.stages import apply_probe, catalog
+
+
+CASES = ("load", "raster", "empty-cache", "prefilled-cache", "cache-churn")
 
 
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def parse_cases(value):
+    items = tuple(value.split(","))
+    if not items or len(items) != len(set(items)) or any(item not in CASES for item in items):
+        raise argparse.ArgumentTypeError("unknown or duplicate font case")
+    return items
+
+
+def parse_optional_cells(value):
+    if value == "none":
+        return []
+    return parse_cells(value)
 
 
 def parse_cells(value):
@@ -41,10 +62,20 @@ def parse_cells(value):
 
 
 def add_arguments(parser):
-    parser.add_argument("--font", default="", help="scalable monospace font for FreeType")
-    parser.add_argument("--font-license", default="", help="font licence file; recorded by hash")
+    parser.add_argument("--font", default="", help="primary scalable monospace font for FreeType")
+    parser.add_argument("--font-license", default="", help="primary font licence file; recorded by hash")
+    parser.add_argument("--font-license-name", default="", help="name of the primary font licence")
+    parser.add_argument("--font-manifest", default="", help="JSON face list; replaces --font")
+    parser.add_argument("--coverage-font", action="append", default=[], help="id=path coverage face")
+    parser.add_argument("--coverage-license", action="append", default=[], help="id=path coverage licence")
+    parser.add_argument("--coverage-license-name", action="append", default=[], help="id=name coverage licence")
+    parser.add_argument("--coverage-pitch", action="append", default=[], help="id=fixed or id=cell")
     parser.add_argument("--neuronte-home", default="", help="Neuronte checkout or installed payload")
     parser.add_argument("--cells", type=parse_cells, default=parse_cells("6x12,8x16,10x20"))
+    parser.add_argument("--geometry-cells", type=parse_optional_cells, default=parse_optional_cells("4x6,5x8"))
+    parser.add_argument("--geometry", choices=("on", "off"), default="on")
+    parser.add_argument("--cases", type=parse_cases, default=parse_cases(",".join(CASES)))
+    parser.add_argument("--presentation", choices=("off", "fixture", "live"), default="off")
     parser.add_argument("--corpora", default="ascii", help="comma-separated: " + ",".join(CORPORA))
     parser.add_argument("--raster-calls", type=int, default=95, help="uncached calls per native batch")
     parser.add_argument("--frames", type=int, default=1, help="80x25 frames per draw batch")
@@ -57,13 +88,14 @@ def add_arguments(parser):
 
 
 def inputs(args):
+    faces = resolve_faces(args)
     home = Path(args.neuronte_home or os.environ.get("NEURONTE_HOME") or
                 os.environ.get("NEURONTE") or "~/projects/neuronte").expanduser().resolve()
     paths = {
         "library": Path(os.environ.get("NEURONTE_LIBRARY") or home / "build/libneuronte.so").expanduser().resolve(),
         "weights": Path(os.environ.get("NEURONTE_WEIGHTS") or home / "weights/neuronte-split-v5.nrt").expanduser().resolve(),
-        "font": Path(args.font).expanduser().resolve() if args.font else None,
-        "font_license": Path(args.font_license).expanduser().resolve() if args.font_license else None,
+        "font": faces[0].path,
+        "font_license": faces[0].license_path,
     }
     for key, path in paths.items():
         if path is None or not path.is_file():
@@ -81,7 +113,7 @@ def inputs(args):
     if len(requested) != len(set(requested)):
         raise ValueError("duplicate corpus")
     profile(digest(paths["weights"]), requested)
-    return paths
+    return paths, faces
 
 
 def build_worker(directory):
@@ -111,7 +143,14 @@ def build_worker(directory):
                         ["pkg-config", "--modversion", "freetype2"], text=True).strip()}
 
 
-def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capacity=None):
+def with_face(paths, face):
+    updated = dict(paths)
+    updated["font"] = face.path
+    updated["font_license"] = face.license_path
+    return updated
+
+
+def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capacity=None, pitch="fixed"):
     corpus = Path(directory) / "corpus.txt"
     corpus.write_text("".join(f"{code:x}\n" for code in scalars), encoding="ascii")
     output = Path(directory) / "pixels.bin"
@@ -119,7 +158,8 @@ def run_worker(binary, paths, engine, mode, cell, scalars, args, directory, capa
     command = [str(binary), engine, str(paths["library"]),
                str(paths["weights" if engine == "neuronte" else "font"]), mode,
                *map(str, cell), "0", str(int(args.hinting == "native")),
-               str(capacity or args.cache_entries), str(calls), "80", "25", str(corpus), str(output)]
+               str(capacity or args.cache_entries), str(calls), "80", "25", str(corpus), str(output),
+               "0" if pitch == "fixed" else "1"]
     start = time.perf_counter_ns()
     completed = subprocess.run(command, check=True, capture_output=True, text=True, timeout=args.job_timeout)
     wall = time.perf_counter_ns() - start
@@ -204,23 +244,59 @@ def hardware():
             "kernel": platform.release(), "load_average": list(os.getloadavg())}
 
 
+def _capture(binary, paths, engine, cell, shared, args, directory, pitch):
+    validation, masks = run_worker(
+        binary, paths, engine, "validate", cell, shared, args, directory, pitch=pitch)
+    glyphs = validation.pop("glyphs", None)
+    if glyphs is None or len(glyphs) != len(shared):
+        raise ValueError("validation did not record one geometry row per scalar")
+    if len(masks) != len(shared) * cell[0] * cell[1]:
+        raise ValueError("validation mask size mismatch")
+    return validation, masks, glyphs
+
+
+def _geometry_csv(row):
+    insets = row.get("insets") or {}
+    return {
+        "engine": row["engine"], "corpus": row["corpus"], "cell": row["cell"],
+        "scalar": row["scalar"], "ink": row["ink"], "clipped": row["clipped"],
+        "edges": row["edges"], "expected_edges": row["expected_edges"],
+        "source_overhang": int(bool(row["source_overhang"])),
+        "inset_l": insets.get("L", ""), "inset_r": insets.get("R", ""),
+        "inset_t": insets.get("T", ""), "inset_b": insets.get("B", ""),
+        "advance": row["advance"], "outline": int(bool(row["outline"])),
+    }
+
+
+def _unranked(geometry):
+    for item in geometry:
+        comparison = item.get("comparison") or {}
+        if comparison.get("quality_rank") is not None or comparison.get("similarity_winner") is not None:
+            raise ValueError("geometry comparison ranked a font")
+        if "ssim" in json.dumps(comparison).lower():
+            raise ValueError("geometry comparison invented a similarity score")
+
+
 def measure(args):
-    paths = inputs(args)
+    paths, faces = inputs(args)
     if args.cpu is not None:
         if args.cpu not in os.sched_getaffinity(0):
             raise ValueError("requested CPU is outside the allowed affinity")
         os.sched_setaffinity(0, {args.cpu})
     artifacts = Path(os.environ["KILIX_BENCH_ARTIFACT_DIR"])
     profile_name, corpora, unsupported = profile(digest(paths["weights"]), args.corpora.split(","))
-    result = {"tool": "kilix-bench", "tool_version": "0.2.3", "subject": "kilix-fonts",
+    result = {"tool": "kilix-bench", "tool_version": __version__, "subject": "kilix-fonts",
               "started_utc": datetime.now(timezone.utc).isoformat(),
               "subject_version": "1", "subject_revision": revision(Path(__file__).parent),
               "python": platform.python_version(), "machine": platform.machine(), "size": [80, 25],
               "note": "CPU terminal-cell comparison. Native batch times include mask normalization. "
-                      "Both engines use the same u8 mask cache and CPU compositor. No shaping, GPU, "
-                      "terminal presentation or display latency. Different font designs; no pixel-accuracy ranking.",
-              "weights_profile": profile_name, "assets": {key: {"name": p.name, "sha256": digest(p), "bytes": p.stat().st_size}
-                                                           for key, p in paths.items()},
+                      "Both engines use the same u8 mask cache and CPU compositor. Missing cmap entries "
+                      "are excluded instead of timed as fallback glyphs. No shaping, GPU execution, "
+                      "compositor present, or scanout. Different font designs are not ranked.",
+              "weights_profile": profile_name,
+              "assets": {key: {"name": p.name, "sha256": digest(p), "bytes": p.stat().st_size}
+                         for key, p in paths.items()},
+              "faces": [face.record(digest) for face in faces],
               "neuronte_revision": revision(paths["library"].parent),
               "neuronte_weights_revision": revision(paths["weights"].parent),
               "hardware_start": hardware(), "seed": args.seed, "repeats": args.repeats, "warmup": args.warmup,
@@ -229,44 +305,74 @@ def measure(args):
               "process_policy": "fresh native process per trial; OS file cache is not dropped; "
                                 "raster primes one corpus; draw-warm primes the shared cache; draw-cold leaves it empty",
               "freetype_size_request": "FT_SIZE_REQUEST_TYPE_CELL; uniform scale; native baseline; clipped ink counted",
-              "coverage": {}, "scenarios": [], "ratios": [], "trials": [], "artifacts": []}
+              "coverage": {}, "geometry": [], "scenarios": [], "ratios": [], "trials": [], "artifacts": []}
     rng = random.Random(args.seed)
+    geometry_rows = []
+    modes = [("load", "load", args.cache_entries), ("raster", "raster", args.cache_entries),
+             ("empty-cache", "draw-cold", args.cache_entries),
+             ("prefilled-cache", "draw-warm", args.cache_entries),
+             ("cache-churn", "draw-warm", args.churn_entries)]
+    modes = [item for item in modes if item[0] in args.cases]
     with tempfile.TemporaryDirectory(prefix="font-worker-") as temporary:
         binary, build = build_worker(temporary)
         result["build"] = build
+        probes = {face.id: {} for face in faces}
+        fixed = {}
         for corpus_name, codes in corpora.items():
-            if corpus_name in unsupported:
-                result["coverage"][corpus_name] = {"status": "unavailable", "reason": "not declared for selected weights"}
+            if corpus_name in unsupported or not codes:
                 continue
-            probe, _ = run_worker(binary, paths, "freetype", "probe", args.cells[0], codes, args, temporary)
-            if len(probe["supported"]) != len(codes):
-                raise ValueError("coverage probe length mismatch")
-            shared = [code for code, yes in zip(codes, probe["supported"]) if yes]
-            excluded = [code for code, yes in zip(codes, probe["supported"]) if not yes]
-            result["coverage"][corpus_name] = {"requested": codes, "shared": shared,
-                                               "freetype_missing": excluded, "status": "measured" if shared else "unavailable"}
-            result["freetype_version"] = probe["freetype_version"]
-            if not shared:
-                continue
-            # Both engines receive the same seeded sequence. Save its order.
+            for face in faces:
+                probe, _ = run_worker(
+                    binary, with_face(paths, face), "freetype", "probe", args.cells[0],
+                    codes, args, temporary, pitch=face.pitch)
+                probes[face.id][corpus_name] = probe["supported"]
+                fixed[face.id] = probe["fixed_width"]
+                result["freetype_version"] = probe["freetype_version"]
+        report, jobs = coverage_plan(corpora, unsupported, faces, probes)
+        for entry in report.values():
+            for row in entry["faces"]:
+                if row["id"] in fixed:
+                    row["fixed_width"] = fixed[row["id"]]
+        for face_row in result["faces"]:
+            if face_row["id"] in fixed:
+                face_row["fixed_width"] = fixed[face_row["id"]]
+        result["coverage"] = report
+        by_id = {face.id: face for face in faces}
+        for corpus_name, face_id, shared in jobs:
+            face = by_id[face_id]
+            face_paths = with_face(paths, face)
             rng.shuffle(shared)
-            for cell in args.cells:
+            result["coverage"][corpus_name]["shared"] = shared
+            timed_cells = list(args.cells)
+            extra_cells = [cell for cell in args.geometry_cells if cell not in timed_cells]
+            for cell in timed_cells + (extra_cells if args.geometry == "on" else []):
                 label = f"{corpus_name}-{cell[0]}x{cell[1]}"
-                masks, frames = {}, {}
+                masks, frames, glyphs = {}, {}, {}
                 for engine in ("neuronte", "freetype"):
-                    validation, masks[engine] = run_worker(binary, paths, engine, "validate", cell, shared, args, temporary)
-                    if len(masks[engine]) != len(shared) * cell[0] * cell[1]:
-                        raise ValueError("validation mask size mismatch")
-                    frames[engine] = reference_frame(masks[engine], len(shared), cell, 2000 * args.frames)
+                    pitch = face.pitch if engine == "freetype" else "fixed"
+                    validation, masks[engine], glyphs[engine] = _capture(
+                        binary, face_paths, engine, cell, shared, args, temporary, pitch)
+                    if cell in timed_cells:
+                        frames[engine] = reference_frame(masks[engine], len(shared), cell, 2000 * args.frames)
                     name = f"{label}-{engine}.png"
                     preview(masks[engine], len(shared), cell, artifacts / name)
                     result["artifacts"].append({"name": name, "sha256": digest(artifacts / name),
-                                                "cell": cell, "engine": engine, "corpus": corpus_name,
-                                                "scalars": shared, "validation": validation})
-                modes = [("load", "load", args.cache_entries), ("raster", "raster", args.cache_entries),
-                         ("empty-cache", "draw-cold", args.cache_entries),
-                         ("prefilled-cache", "draw-warm", args.cache_entries),
-                         ("cache-churn", "draw-warm", args.churn_entries)]
+                                                "cell": list(cell), "engine": engine, "corpus": corpus_name,
+                                                "face": face.id, "scalars": shared, "validation": validation})
+                if args.geometry == "on":
+                    summary, rows, _observed = analyze(corpus_name, cell, shared, {
+                        engine: {"masks": masks[engine], "glyphs": glyphs[engine]}
+                        for engine in masks})
+                    summary["comparison_face"] = face.id
+                    summary["action"] = result["coverage"][corpus_name]["action"]
+                    result["geometry"].append(summary)
+                    geometry_rows.extend(_geometry_csv(row) for row in rows)
+                    for name in write_pair(artifacts, label, cell, shared, {
+                            engine: {"masks": masks[engine]} for engine in masks}):
+                        result["artifacts"].append({"name": name, "sha256": digest(artifacts / name),
+                                                    "cell": list(cell), "corpus": corpus_name, "kind": "geometry"})
+                if cell not in timed_cells:
+                    continue
                 for case, mode, capacity in modes:
                     samples = {"neuronte": [], "freetype": []}
                     records = {"neuronte": [], "freetype": []}
@@ -274,7 +380,10 @@ def measure(args):
                         order = ["neuronte", "freetype"]
                         rng.shuffle(order)
                         for order_index, engine in enumerate(order):
-                            row, raw = run_worker(binary, paths, engine, mode, cell, shared, args, temporary, capacity)
+                            pitch = face.pitch if engine == "freetype" else "fixed"
+                            row, raw = run_worker(
+                                binary, face_paths, engine, mode, cell, shared, args, temporary,
+                                capacity, pitch)
                             expected = frames[engine] if mode.startswith("draw-") else masks[engine][
                                 ((row["calls"] - 1) % len(shared)) * cell[0] * cell[1]:
                                 (((row["calls"] - 1) % len(shared)) + 1) * cell[0] * cell[1]]
@@ -300,9 +409,23 @@ def measure(args):
                             samples[engine], {"calls": rows[0]["calls"], "cache_entries": capacity,
                                 "cache_hits": [r["cache_hits"] for r in rows], "cache_misses": [r["cache_misses"] for r in rows],
                                 "median_ns_per_glyph": statistics.median(r["ns_per_glyph"] for r in rows)}))
-                    result["ratios"].append({"case": f"{label}/{case}", "definition": "Neuronte time / FreeType time",
-                                             **paired_ratio(samples["neuronte"], samples["freetype"], args.seed)})
+                    result["ratios"].append({
+                        "case": f"{label}/{case}", "definition": "Neuronte time / FreeType time",
+                        "freetype_face": face.id,
+                        "coverage_action": result["coverage"][corpus_name]["action"],
+                        **paired_ratio(samples["neuronte"], samples["freetype"], args.seed)})
+        probe = run_presentation(args.presentation, Path(temporary) / "presentation")
+    if isinstance(probe, dict) and isinstance(probe.get("reason"), str):
+        probe["reason"] = public_text(probe["reason"])
+    result["presentation"] = probe
+    draw_cases = {"empty-cache", "prefilled-cache", "cache-churn"}
+    result["stages"] = apply_probe(catalog(
+        bool(result["trials"]),
+        any(row["case"] in draw_cases for row in result["trials"])), probe)
     result["hardware_end"] = hardware()
+    if any(item.get("action") == "timed-against-coverage-face" for item in result["coverage"].values()):
+        result["note"] += " A corpus whose primary face has no cmap entries uses one named coverage face."
+    _unranked(result["geometry"])
     if not result["trials"]:
         result["note"] += " No shared supported corpus was available; no timings were produced."
     csv_path = artifacts / "trials.csv"
@@ -313,6 +436,14 @@ def measure(args):
             writer.writerows(result["trials"])
         csv_path.chmod(0o600)
         result["artifacts"].append({"name": "trials.csv", "sha256": digest(csv_path)})
+    if geometry_rows:
+        geometry_path = artifacts / "geometry.csv"
+        with geometry_path.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(geometry_rows[0]))
+            writer.writeheader()
+            writer.writerows(geometry_rows)
+        geometry_path.chmod(0o600)
+        result["artifacts"].append({"name": "geometry.csv", "sha256": digest(geometry_path)})
     return result
 
 

@@ -28,6 +28,20 @@ route or fallback drawing never establishes support. Profiles currently accept
 split-v5, retained split-v4, and ascii-v0. These corpora are subsets of their
 declared training sets. Other weights require an explicit reviewed profile.
 
+A second face is optional and is never mixed into the primary face's
+intersection. Pass `--coverage-font id=path`, `--coverage-license id=path`,
+and `--coverage-license-name id=name`, or one `--font-manifest` JSON file
+with `faces` listed primary-first. Each face is recorded by basename, byte
+size, SHA256, licence name, and licence SHA256. The font files stay outside
+this package. When the primary cmap intersection is non-empty, only that
+intersection is timed. When it is empty, the one coverage face with the
+largest intersection is timed instead, and the report names that face. If
+every declared face misses the corpus, the corpus stays unavailable and no
+trial is written. `.notdef` is not a successful comparison. The primary face
+must be scalable and fixed-pitch. A coverage face may declare `pitch=cell`
+when it is scalable but not fixed-pitch; its advances are not used as the
+cell size. `--cases` limits the timed cases. The default remains all five.
+
 `--cpu N` restricts only the benchmark child to an allowed CPU. Governor,
 affinity, CPU model, kernel and start/end load average are recorded. The tool
 does not change machine-wide scheduling or flush system caches. Results on a
@@ -66,6 +80,18 @@ and [glyph retrieval API](https://freetype.org/freetype2/docs/reference/ft2-glyp
 Inspect previews and clipped-ink counts before interpreting speed as useful
 rendering quality. No font fallback or substitute box is timed.
 
+## Geometry fixtures
+
+With `--geometry on` (the default), the existing validation raster also
+records per-glyph ink, clipped samples, placed and source boxes, edge
+contact, advance, and outline mode. `--geometry-cells` defaults to `4x6,5x8`
+and is not timed. Box drawing and block corpora also export a seam or block
+panel plus a design-delta image. A gap is recorded only where both glyphs
+are expected to join. Identical cell masks set `pixel_equivalent` and still
+leave `quality_rank` and `similarity_winner` null. Unequal samples are a
+design delta, not a winner and not an SSIM. `--geometry off` skips the
+fixture images and the extra cells.
+
 ## Controls and evidence
 
 | Option | Default | Meaning |
@@ -77,6 +103,10 @@ rendering quality. No font fallback or substitute box is timed.
 | `--churn-entries` | `16` | Churn capacity, a multiple of four |
 | `--seed` | `20261113` | Corpus order and engine order within trial pairs |
 | `--job-timeout` | `180` seconds | Bound on each process; increase explicitly for long runs |
+| `--geometry` | `on` | Record cell geometry and, for box and block corpora, fixture images |
+| `--geometry-cells` | `4x6,5x8` | Extra untimed cells for geometry only; `none` disables them |
+| `--cases` | all five | Comma-separated subset of the cases above |
+| `--presentation` | `off` | `fixture` or `live`; see stages below |
 
 `NEURONTE_LIBRARY` and `NEURONTE_WEIGHTS` override assets under
 `--neuronte-home`, `NEURONTE_HOME` or `NEURONTE`. Every worker is a fresh process.
@@ -115,6 +145,33 @@ without an interval. A p99 from a small number of batches is only a sample
 statistic. Previews preserve recorded scalar order. No SSIM, quality ranking
 or aggregate winner is inferred from different font designs. Runs have unique
 records and concurrent saves use distinct temporary files. Storage is private.
+
+## Stages
+
+Each font result lists proposed workload stages and a status. `cpu-glyph-raster`
+is `measured` when this suite wrote trials. `mask-cache-compose` is `measured`
+only when a draw case ran (`empty-cache`, `prefilled-cache`, or `cache-churn`).
+`application-protocol` stays `separate-suite`: the text and render suites time
+application and graphics-SDK work against a byte-counting stand-in, which does
+not acknowledge a frame. `gpu-upload`, `gpu-execution`, `sdf-atlas`,
+`compositor-present`, and `scanout` stay `unavailable`. The public coverage
+API returns a cell mask, not a raw distance field, and this suite has no
+present fence or photon timestamp.
+
+`--presentation fixture` compiles `presentation_probe.c` against the
+kitty-framebuffer sources (`KITTY_FRAMEBUFFER_HOME`, or the checkout under
+the invoking user's home) and answers its own graphics query on a
+pseudoterminal. The font sandbox replaces `HOME`, so the parent passes that
+checkout and `KILIX_BENCH_KITTY` into the child. Neither path is stored.
+That peer is `protocol-fixture`. Its stages are `fixture-only`.
+The numbers from that reply are discarded. `--presentation live` starts Xvfb
+and a new Kitty with software GL, its own instance group, and a clean
+environment. It does not attach to the caller's terminal. A graphics-query
+reply and, when observed, disappearance of the shared-memory name are consumer
+acknowledgements. `session_start_ns` includes terminal setup. `shm_consumed_ns`
+is the time from `kittyfb_present` until the name is gone after the write.
+Neither is GPU time, compositor time, or scanout. A missing Kitty or Xvfb
+records the consumer stages unavailable.
 
 ## Other layers
 

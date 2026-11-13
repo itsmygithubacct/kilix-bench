@@ -299,7 +299,7 @@ def measure(args):
     ]
     return {
         "tool": "kilix-bench",
-        "tool_version": "0.2.3",
+        "tool_version": "0.2.4",
         "subject": "kilix-95",
         "subject_version": _version(desktop),
         "subject_revision": _revision(desktop),

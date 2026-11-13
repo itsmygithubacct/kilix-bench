@@ -440,7 +440,7 @@ def _measure(args, graphics, raster, neuronte, handle, weights,
         digest = hashlib.sha256(handle_file.read()).hexdigest()
     return {
         "tool": "kilix-bench",
-        "tool_version": "0.2.3",
+        "tool_version": "0.2.4",
         "subject": "kilix-text",
         "subject_version": _version(home),
         "subject_revision": _revision(home),
