@@ -17,6 +17,7 @@ candidate and optional baseline libraries first. Results use the
 | `decode_0_raw_1_gbrp` | The same command writing planes instead of packed RGB |
 | `library_0_rgb24`, `library_0_gbrp` | Neuronte's in-process decoder through its pipe harness, at the command's boundary |
 | `seek_command`, `seek_library` | A start or seek to the first complete frame: the command as a new process, or the in-process decoder |
+| `seek_baseline` | The baseline checkout's media decoder at that same first-frame boundary |
 
 Kernel pixel equality is checked before timing. Read measurements exclude
 disk and pipe costs. The shared-memory consumer checks geometry and length,
@@ -42,6 +43,19 @@ frame from three starts, `--start` and 4.9 and 13.2 seconds later, in
 rotated order; both decoders must give the same first frame from each. The
 command's CPU is its own, from `wait4`; the in-process decoder's is this
 process's from open to close, so it includes its threads.
+
+`--seek-only` runs just these startup/seek scenarios and writes the separate
+`neuronte-video-seek` result name. With `--baseline-neuronte` pointing to a
+built media decoder, the baseline, candidate and command are interleaved at
+every position and their first RGB frames must match. The JSON identifies
+both media-library hashes and records library open and close durations as
+well as the time to the first frame. A baseline without the optional media
+library is still usable for kernel measurements, but adds no seek arm.
+
+These calls open the input for each seek, matching the current player. For a
+live mpv comparison, explicitly enable `--hr-seek=yes`: its default arrow-key
+relative seeks may stop at a keyframe. Keyframe seeking and precise seeking
+are different workloads.
 
 Scenario order rotates each repetition; warmups are excluded from summaries.
 JSON retains individual measured samples and decoder runs, child CPU usage,

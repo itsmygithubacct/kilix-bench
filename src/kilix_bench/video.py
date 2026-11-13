@@ -46,6 +46,8 @@ def identity(home):
     return dict(revision=git.stdout.strip() if git.returncode == 0 else None,
                 dirty=bool(dirty.stdout) if dirty.returncode == 0 else None,
                 library_sha256=sha(home / 'build/libneuronte.so'),
+                media_library_sha256=sha(home / 'build/libneuronte-media.so')
+                if (home / 'build/libneuronte-media.so').exists() else None,
                 weights_sha256=sha(home / 'weights/neuronte-video-masks-v0.nrt'),
                 module_sha256=sha(home / 'tools/neuronte_video.py'))
 
@@ -234,7 +236,8 @@ def arm_command(module, home, arm, video, width, height, fps, start, chroma, fra
             value('-threads:v'), value('-filter_threads'), str(frames)]
 
 
-def decoder_scenarios(module, home, video, width, height, start, frames, repeats, warmup, arms):
+def video_source(video, start, frames):
+    """The source description shared by the decoder and seek measurements."""
     probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_streams',
                             '-show_format', '-of', 'json', str(video)], capture_output=True, text=True, check=True)
     metadata = json.loads(probe.stdout)
@@ -246,6 +249,15 @@ def decoder_scenarios(module, home, video, width, height, start, frames, repeats
     chroma = stream.get('chroma_location')
     if chroma not in ('left', 'center', 'topleft', 'top', 'bottomleft', 'bottom'):
         chroma = None
+    source = {key: stream[key] for key in ('codec_name', 'width', 'height', 'pix_fmt', 'r_frame_rate',
+                                          'color_space', 'color_range', 'chroma_location') if key in stream}
+    source.update(sha256=sha(video), start=start, frames=frames)
+    return source, dict(fps=fps, chroma=chroma, duration=float(metadata['format']['duration']))
+
+
+def decoder_scenarios(module, home, video, width, height, start, frames, repeats, warmup, arms):
+    source, clip = video_source(video, start, frames)
+    fps, chroma = clip['fps'], clip['chroma']
     rows, reference = [], None
     for repetition in range(warmup + repeats):
         offset = repetition % len(arms)
@@ -276,35 +288,37 @@ def decoder_scenarios(module, home, video, width, height, start, frames, repeats
                 max_rss_kib=[r['max_rss_kib'] for r in selected], exact_rgb=True,
                 engine=arm['engine'], pix_fmt=arm['pix_fmt'],
                 decoder_threads=arm['decoder_threads'], output_threads=arm['output_threads'])))
-    source = {key: stream[key] for key in ('codec_name', 'width', 'height', 'pix_fmt', 'r_frame_rate',
-                                          'color_space', 'color_range', 'chroma_location') if key in stream}
-    source.update(sha256=sha(video), start=start, frames=frames)
-    return scenarios, rows, source, dict(fps=fps, chroma=chroma, duration=float(metadata['format']['duration']))
+    return scenarios, rows, source, clip
 
 
-def seek_scenarios(module, home, video, width, height, clip, start, repeats, warmup):
+def seek_scenarios(module, home, video, width, height, clip, start, repeats, warmup, baseline=None):
     """The first frame after a start or seek, as the player gets it: from the
     command (process start, open, probe, accurate seek and the first frame
     through its pipe) or from the in-process decoder (open, probe, seek and
     the first frame). Both must give the same frame. In-process CPU is this
-    process's, over open to close, so it includes the decoder's threads."""
+    process's, over open to close, so it includes the decoder's threads. A
+    built baseline media library is interleaved at the same boundary."""
     import numpy as np
     library = home / 'build/libneuronte-media.so'
     if not library.exists() or not hasattr(module, 'MediaDecoder'):
         return [], []
-    media = module.MediaDecoder(library)
+    engines = dict(library=module.MediaDecoder(library))
+    if baseline is not None and (baseline / 'build/libneuronte-media.so').exists():
+        base_module = load_module(baseline / 'tools/neuronte_video.py', 'video_seek_baseline')
+        engines['baseline'] = base_module.MediaDecoder(baseline / 'build/libneuronte-media.so')
     fps, chroma = clip['fps'], clip['chroma']
     starts = [round(start + offset, 3) for offset in SEEK_OFFSETS
               if start + offset + 1 / fps <= clip['duration']]
     if not starts:
         return [], []
-    order = [(position, engine) for position in starts for engine in ('command', 'library')]
+    order = [(position, engine) for position in starts for engine in ('command', *engines)]
     planes = np.empty((3, height, width), np.uint8)
     rows = []
     for repetition in range(warmup + repeats):
         offset = repetition % len(order)
         for position, engine in order[offset:] + order[:offset]:
             load_before = list(os.getloadavg())
+            stages = {}
             if engine == 'command':
                 command = module.decoder_command(video, width, height, fps, start=position, chroma=chroma,
                                                  pix_fmt='gbrp')
@@ -313,7 +327,8 @@ def seek_scenarios(module, home, video, width, height, clip, start, repeats, war
                 first, used, digest = run['first_frame_seconds'], run['cpu_seconds'], run['hashes'][0]
             else:
                 process, begin = time.process_time(), time.perf_counter()
-                stream = media.open(video, width, height, fps, start=position, chroma=chroma, pix_fmt='gbrp')
+                stream = engines[engine].open(video, width, height, fps, start=position, chroma=chroma, pix_fmt='gbrp')
+                opened = time.perf_counter()
                 if stream is None:
                     raise ValueError('the in-process decoder declined the benchmark input')
                 try:
@@ -323,17 +338,20 @@ def seek_scenarios(module, home, video, width, height, clip, start, repeats, war
                         raise ValueError(f'no frame from {position} s: {stream.failure}')
                     stream.copy(frame, planes)
                 finally:
+                    closing = time.perf_counter()
                     stream.close()
+                    closed = time.perf_counter()
                 used = time.process_time() - process
                 digest = packed_hash(planes, width, height)
+                stages = dict(open_seconds=opened-begin, close_seconds=closed-closing)
             rows.append(dict(engine=engine, start=position, first_frame_seconds=first, cpu_seconds=used,
                              hash=digest, repetition=repetition, warmup=repetition < warmup,
-                             load_before=load_before, loadavg=list(os.getloadavg())))
+                             load_before=load_before, loadavg=list(os.getloadavg()), **stages))
     for position in starts:
         if len({r['hash'] for r in rows if r['start'] == position}) != 1:
             raise ValueError(f'the decoders gave different first frames from {position} s')
     scenarios = []
-    for engine in ('command', 'library'):
+    for engine in ('command', *engines):
         selected = [r for r in rows if not r['warmup'] and r['engine'] == engine]
         scenarios.append(scenario(f'seek_{engine}', 'start or seek to the first complete frame',
             [r['first_frame_seconds'] for r in selected], dict(
@@ -355,31 +373,40 @@ def main(argv=None):
     p.add_argument('--repeats', type=int, default=6)
     p.add_argument('--warmup', type=int, default=1)
     p.add_argument('--frames', type=int, default=60)
+    p.add_argument('--seek-only', action='store_true', help='measure starts/seeks without kernels or decoder throughput')
     args = p.parse_args(argv)
     if (min(args.width, args.height, args.repeats, args.frames) < 1 or
             min(args.warmup, args.start) < 0 or not math.isfinite(args.start)):
         p.error('invalid size, repetition count or start')
+    if args.seek_only and not args.video:
+        p.error('--seek-only requires --video')
     home = args.neuronte.resolve()
     if args.baseline_neuronte:
         args.baseline_neuronte = args.baseline_neuronte.resolve()
     model = identity(home)
-    scenarios = kernel_scenarios(home, args.baseline_neuronte, args.width, args.height,
-                                args.repeats, args.warmup, min(args.frames, 24))
+    scenarios = [] if args.seek_only else kernel_scenarios(home, args.baseline_neuronte, args.width, args.height,
+                                                          args.repeats, args.warmup, min(args.frames, 24))
     rows, seek_rows, source = [], [], None
     if args.video:
         module = load_module(home / 'tools/neuronte_video.py', 'video_decode')
         video = args.video.resolve()
-        decoded, rows, source, clip = decoder_scenarios(module, home, video, args.width, args.height,
-            args.start, args.frames, args.repeats, args.warmup, decoder_arms(module, home))
-        scenarios.extend(decoded)
+        if args.seek_only:
+            source, clip = video_source(video, args.start, 1)
+        else:
+            decoded, rows, source, clip = decoder_scenarios(module, home, video, args.width, args.height,
+                args.start, args.frames, args.repeats, args.warmup, decoder_arms(module, home))
+            scenarios.extend(decoded)
         seeks, seek_rows = seek_scenarios(module, home, video, args.width, args.height, clip, args.start,
-                                          args.repeats, args.warmup)
+                                          args.repeats, args.warmup, args.baseline_neuronte)
+        if args.seek_only and not seeks:
+            raise ValueError('--seek-only needs a built media decoder and a seekable interval')
         scenarios.extend(seeks)
     import numpy as np
     ffmpeg = shutil.which('ffmpeg') if args.video else None
     decoder = dict(version=subprocess.check_output([ffmpeg, '-version'], text=True).splitlines()[0],
                    sha256=sha(ffmpeg)) if ffmpeg else None
-    payload = dict(tool='kilix-bench', tool_version=__version__, subject='neuronte-video',
+    payload = dict(tool='kilix-bench', tool_version=__version__,
+                   subject='neuronte-video-seek' if args.seek_only else 'neuronte-video',
                    subject_version='runtime', subject_revision=model['revision'],
                    python=platform.python_version(), machine=platform.machine(),
                    size=[args.width, args.height], model=model, scenarios=scenarios,

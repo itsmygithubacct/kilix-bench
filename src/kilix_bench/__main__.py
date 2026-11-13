@@ -32,6 +32,7 @@ def _parser():
     parser.add_argument("--video", help="Optional video file for decoder thread measurements")
     parser.add_argument("--start", type=float, default=0.)
     parser.add_argument("--frames", type=int, default=60)
+    parser.add_argument("--seek-only", action="store_true", help="only video startup/seek comparisons")
     return parser
 
 
@@ -61,6 +62,8 @@ def main(argv=None):
     if (min(args.width, args.height, args.repeats, args.frames) < 1 or
             min(args.warmup, args.start) < 0 or not math.isfinite(args.start)):
         raise SystemExit("invalid size, repetition count or start")
+    if args.seek_only and (args.suite != 'video' or not args.video):
+        raise SystemExit('--seek-only requires --suite video and --video')
     kilix_home = args.kilix_home or kilix_home_from_env()
     if args.suite != 'video' and (not kilix_home or not os.path.isdir(os.path.join(kilix_home, "config"))):
         raise SystemExit("pass --kilix-home pointing at a Kilix checkout")
@@ -80,6 +83,8 @@ def main(argv=None):
             raise SystemExit("the video suite needs --neuronte")
         command = [sys.executable, '-m', 'kilix_bench.video', *shared,
                    '--start', str(args.start), '--frames', str(args.frames)]
+        if args.seek_only:
+            command.append('--seek-only')
         for name in ('neuronte', 'baseline_neuronte', 'video'):
             value = getattr(args, name)
             if value:
@@ -110,9 +115,9 @@ def main(argv=None):
     src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
     env.update(extra_env)
-    # At most eight decoder arms and six start/seek cells per repetition,
+    # At most eight decoder arms and nine start/seek cells per repetition,
     # plus the kernel measurements. The child retains its own per-run bounds.
-    timeout = max(180, (args.repeats + args.warmup) * 14 * 65 + 180) if args.suite == 'video' else 180
+    timeout = max(180, (args.repeats + args.warmup) * (9 if args.seek_only else 17) * 65 + 180) if args.suite == 'video' else 180
     payload = _run(command, env, root, timeout=timeout)
     stamped, _latest, text = write_run(payload, forbidden=tuple(forbidden))
     sys.stdout.write(render_text(payload))

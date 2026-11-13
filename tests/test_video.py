@@ -11,10 +11,50 @@ from unittest.mock import patch
 
 from kilix_bench.isolate import sandbox
 from kilix_bench.terminal import ConsumerTerm
-from kilix_bench.video import arm_command, decoder_arms, measure_decoder
+from kilix_bench.video import arm_command, decoder_arms, measure_decoder, packed_hash, seek_scenarios
 
 
 class VideoTest(unittest.TestCase):
+    def test_seek_baseline_is_interleaved_and_must_match_the_command(self):
+        import numpy as np
+        from types import SimpleNamespace
+
+        class Stream:
+            failure = ''
+            def __init__(self, value): self.value = value
+            def read(self): return object()
+            def copy(self, frame, out): out.fill(self.value)
+            def close(self): pass
+
+        candidate = SimpleNamespace(open=lambda *args, **kwargs: Stream(7))
+        baseline = SimpleNamespace(open=lambda *args, **kwargs: Stream(7))
+        module = SimpleNamespace(MediaDecoder=lambda path: candidate,
+                                 decoder_command=lambda *args, **kwargs: ['ffmpeg', '-'])
+        base_module = SimpleNamespace(MediaDecoder=lambda path: baseline)
+        digest = packed_hash(np.full((3, 1, 2), 7, np.uint8), 2, 1)
+        command = dict(first_frame_seconds=.01, cpu_seconds=.02, hashes=[digest])
+        with tempfile.TemporaryDirectory() as temporary:
+            home, base = Path(temporary)/'candidate', Path(temporary)/'baseline'
+            for tree in (home, base):
+                (tree/'build').mkdir(parents=True)
+                (tree/'build/libneuronte-media.so').touch()
+            with patch('kilix_bench.video.load_module', return_value=base_module), \
+                    patch('kilix_bench.video.measure_decoder', return_value=command):
+                clip = dict(fps=30, chroma=None, duration=40)
+                scenarios, rows = seek_scenarios(module, home, 'input', 2, 1, clip, 20, 2, 1, base)
+                self.assertEqual({row['name'] for row in scenarios},
+                                 {'seek_command', 'seek_library', 'seek_baseline'})
+                self.assertEqual(len(rows), 27)
+                self.assertEqual(sum(row['warmup'] for row in rows), 9)
+                self.assertTrue(all(row['hash'] == digest for row in rows))
+                self.assertTrue(all(row['samples'] == 6 for row in scenarios))
+                first = [(r['start'], r['engine']) for r in rows if r['repetition'] == 0]
+                second = [(r['start'], r['engine']) for r in rows if r['repetition'] == 1]
+                self.assertEqual(second, first[1:] + first[:1])
+                baseline.open = lambda *args, **kwargs: Stream(8)
+                with self.assertRaisesRegex(ValueError, 'different first frames'):
+                    seek_scenarios(module, home, 'input', 2, 1, clip, 20, 1, 0, base)
+
     def test_exact_fragmented_child_frames(self):
         command = [sys.executable, '-c',
                    "import os; os.write(1,b'ab'); os.write(1,b'cdefghijkl')"]
