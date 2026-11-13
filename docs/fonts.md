@@ -92,6 +92,9 @@ workers. Compilation, validation, hashes and PNG encoding are outside native
 timed regions. Worker compiler flags, worker/source hashes, library/font hashes,
 runtime FreeType version and package metadata are recorded. The worker reports
 wall/process CPU times, loop calibration, page faults and peak process RSS.
+Each batch also records its process ID, realtime/monotonic start timestamps,
+context switches and page-fault deltas. Counter snapshots are taken outside
+the timed loop and can be correlated with separate host diagnostic logs.
 RSS is not exclusive model memory or a measure of multi-process sharing.
 Worker wall time additionally includes process launch, preparation and output;
 it is not application startup or visible-frame latency. Loop overhead is

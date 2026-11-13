@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef struct neuronte neuronte;
 typedef struct {
@@ -242,15 +243,19 @@ int main(int argc, char **argv)
         for (int i = 0; i < count; i++) raster(&e, scalars[i], mask);
     cache.hits = cache.misses = e.raster_calls = e.clipped = 0;
     if (validate || load) calls = count;
+    struct rusage batch_before, batch_after;
+    if (getrusage(RUSAGE_SELF, &batch_before)) fail("cannot read batch counters");
+    uint64_t realtime_started = ns(CLOCK_REALTIME);
     uint64_t cpu_started = ns(CLOCK_PROCESS_CPUTIME_ID);
-    started = ns(CLOCK_MONOTONIC);
+    uint64_t batch_started = ns(CLOCK_MONOTONIC);
     for (int i = 0; i < calls; i++) {
         uint32_t current = scalars[i % count];
         if (draw) composite(output, cached(&e, &cache, current), e.w, e.h, cols, i % (cols * rows));
         else raster(&e, current, validate ? output + i * pixels : output);
     }
-    uint64_t elapsed = ns(CLOCK_MONOTONIC) - started;
+    uint64_t elapsed = ns(CLOCK_MONOTONIC) - batch_started;
     uint64_t cpu_elapsed = ns(CLOCK_PROCESS_CPUTIME_ID) - cpu_started;
+    if (getrusage(RUSAGE_SELF, &batch_after)) fail("cannot read batch counters");
     volatile uint32_t sink = 0;
     started = ns(CLOCK_MONOTONIC);
     for (int i = 0; i < calls; i++) sink ^= scalars[i % count];
@@ -267,10 +272,17 @@ int main(int argc, char **argv)
            ",\"cache_hits\":%" PRIu64 ",\"cache_misses\":%" PRIu64
            ",\"clipped_ink_samples\":%" PRIu64 ",\"output_bytes\":%zu"
            ",\"peak_rss_kib\":%ld,\"minor_faults\":%ld,\"major_faults\":%ld"
+           ",\"pid\":%ld,\"batch_realtime_ns\":%" PRIu64 ",\"batch_monotonic_ns\":%" PRIu64
+           ",\"batch_voluntary_switches\":%ld,\"batch_involuntary_switches\":%ld"
+           ",\"batch_minor_faults\":%ld,\"batch_major_faults\":%ld"
            ",\"freetype_version\":\"%d.%d.%d\",\"x_ppem\":%u,\"y_ppem\":%u,\"baseline\":%d}\n",
            elapsed, cpu_elapsed, init_ns, first_ns, loop, calls, e.raster_calls,
            cache.hits, cache.misses, e.clipped, output_bytes, usage.ru_maxrss,
-           usage.ru_minflt, usage.ru_majflt, major, minor, patch,
+           usage.ru_minflt, usage.ru_majflt, (long)getpid(), realtime_started, batch_started,
+           batch_after.ru_nvcsw - batch_before.ru_nvcsw,
+           batch_after.ru_nivcsw - batch_before.ru_nivcsw,
+           batch_after.ru_minflt - batch_before.ru_minflt,
+           batch_after.ru_majflt - batch_before.ru_majflt, major, minor, patch,
            e.face ? e.face->size->metrics.x_ppem : 0,
            e.face ? e.face->size->metrics.y_ppem : 0, e.baseline);
     free(mask); free(output); free(cache.entries); free(cache.storage);
