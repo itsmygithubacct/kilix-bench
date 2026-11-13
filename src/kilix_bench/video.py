@@ -1,8 +1,11 @@
-"""Measure Neuronte's RGB compositor, transport and FFmpeg decoder startup.
+"""Measure Neuronte's RGB compositor, transport and video decoders.
 
 Pixel equality is checked outside kernel timings. Decoder timings include
 startup, filtering and pipe output; first-frame latency includes accurate
-input seeking. These measurements do not include a physical display.
+input seeking. The in-process decoder (libneuronte-media) is measured both
+through its pipe harness, at the same boundary as the FFmpeg command, and
+inside this process, where a start or seek costs no process. These
+measurements do not include a physical display.
 """
 import argparse
 import hashlib
@@ -47,8 +50,19 @@ def identity(home):
                 module_sha256=sha(home / 'tools/neuronte_video.py'))
 
 
-def measure_decoder(command, width, height, frames, timeout=60):
-    """Read into one bounded frame buffer and reap this child's own rusage."""
+def packed_hash(raw, width, height):
+    """sha256 of planar G, B, R samples (FFmpeg gbrp) laid out as packed RGB."""
+    import numpy as np
+    planes = np.frombuffer(raw, np.uint8).reshape(3, height, width)
+    return hashlib.sha256(np.stack((planes[2], planes[0], planes[1]), axis=-1).tobytes()).hexdigest()
+
+
+def measure_decoder(command, width, height, frames, timeout=60, planar=False):
+    """Read into one bounded frame buffer and reap this child's own rusage.
+
+    A planar child writes gbrp; its frames are hashed as packed RGB so they
+    compare with rgb24 output. That conversion is driver work, outside the
+    child's CPU."""
     pixels = bytearray(width * height * 3)
     view = memoryview(pixels)
     hashes, first, used = [], None, 0
@@ -71,7 +85,7 @@ def measure_decoder(command, width, height, frames, timeout=60):
                 if used == len(view):
                     if first is None:
                         first = time.perf_counter() - start
-                    hashes.append(hashlib.sha256(view).hexdigest())
+                    hashes.append(packed_hash(pixels, width, height) if planar else hashlib.sha256(view).hexdigest())
                     used = 0
             while True:
                 reaped, status, usage = os.wait4(child.pid, os.WNOHANG)
@@ -148,10 +162,19 @@ def kernel_scenarios(home, baseline, width, height, repeats, warmup, frames):
             raise ValueError('consumer did not acknowledge a frame')
         terminal.write(payload)
 
-    operations = [('palette_reference', legacy), ('native_rgb24', lambda frame: model.render_rgb24(frame, output)),
-                  ('read_allocated', read_allocated), ('read_reused', read_reused), ('shared_memory', present)]
-    samples = {name: [] for name, _ in operations}
-    cpu = {name: [] for name, _ in operations}
+    operations = [('palette_reference', legacy, pool),
+                  ('native_rgb24', lambda frame: model.render_rgb24(frame, output), pool),
+                  ('read_allocated', read_allocated, pool), ('read_reused', read_reused, pool),
+                  ('shared_memory', present, pool)]
+    if getattr(model, 'native_planes', None) is not None and hasattr(model, 'render_gbrp'):
+        # The same frames as G, B, R planes, the layout the player decodes.
+        planar = np.ascontiguousarray(pool[..., [1, 2, 0]].transpose(0, 3, 1, 2))
+        for planes, reference in zip(planar, references):
+            if not np.array_equal(model.render_gbrp(planes, output), reference):
+                raise ValueError('candidate planar RGB differs from the palette/blend reference')
+        operations.insert(2, ('native_planes', lambda planes: model.render_gbrp(planes, output), planar))
+    samples = {name: [] for name, _, _ in operations}
+    cpu = {name: [] for name, _, _ in operations}
     try:
         for frame in pool:
             present(frame)
@@ -159,10 +182,10 @@ def kernel_scenarios(home, baseline, width, height, repeats, warmup, frames):
                 raise ValueError('shared-memory consumer received different pixels')
         for repetition in range(warmup + repeats):
             offset = repetition % len(operations)
-            for name, operation in operations[offset:] + operations[:offset]:
+            for name, operation, inputs in operations[offset:] + operations[:offset]:
                 start, process = time.perf_counter(), time.process_time()
                 for index in range(frames):
-                    operation(pool[index % len(pool)])
+                    operation(inputs[index % len(inputs)])
                 elapsed, used = time.perf_counter() - start, time.process_time() - process
                 if repetition >= warmup:
                     samples[name].append(elapsed / frames)
@@ -172,12 +195,46 @@ def kernel_scenarios(home, baseline, width, height, repeats, warmup, frames):
     return [scenario(name, 'one complete RGB frame', samples[name], dict(
                 cpu=summarize(cpu[name]), raw_seconds=samples[name], raw_cpu_seconds=cpu[name],
                 inner_frames=frames, exact_rgb=True,
-                native_available=bool(model.native_rgb24),
+                native_available=bool(model.native_planes if name == 'native_planes' else model.native_rgb24),
                 boundary='create SHM + read/hash + acknowledge' if name == 'shared_memory' else 'application memory'))
-            for name, _ in operations]
+            for name, _, _ in operations]
 
 
-def decoder_scenarios(module, video, width, height, start, frames, repeats, warmup, thread_pairs):
+THREAD_PAIRS = [(0, 0), (0, 1), (1, 1), (2, 1), (4, 1)]
+SEEK_OFFSETS = (0., 4.9, 13.2)          # seconds after --start: a keyframe and two mid-GOP points in the test clip
+
+
+def decoder_arms(module, home):
+    """The command at each thread pair, the command writing planes, and the
+    in-process decoder's pipe harness in both layouts when it is built."""
+    import inspect
+    arms = [dict(name=f'decode_{d}_raw_{o}', engine='command', decoder_threads=d, output_threads=o,
+                 pix_fmt='rgb24') for d, o in THREAD_PAIRS]
+    if 'pix_fmt' in inspect.signature(module.decoder_command).parameters:
+        arms.append(dict(name='decode_0_raw_1_gbrp', engine='command', decoder_threads=0, output_threads=1,
+                         pix_fmt='gbrp'))
+        if (home / 'build/neuronte-media-decode').exists():
+            arms += [dict(name=f'library_0_{layout}', engine='library', decoder_threads=0, output_threads=None,
+                          pix_fmt=layout) for layout in ('rgb24', 'gbrp')]
+    return arms
+
+
+def arm_command(module, home, arm, video, width, height, fps, start, chroma, frames):
+    options = dict(start=start, chroma=chroma, decoder_threads=arm['decoder_threads'])
+    if arm['pix_fmt'] != 'rgb24':
+        options['pix_fmt'] = arm['pix_fmt']
+    if arm['engine'] == 'command':
+        command = module.decoder_command(video, width, height, fps, output_threads=arm['output_threads'], **options)
+        command[-1:-1] = ['-frames:v', str(frames)]
+        return command
+    # neuronte-media-decode takes the command's own arguments and writes the same bytes.
+    command = module.decoder_command(video, width, height, fps, **options)
+    value = lambda flag: command[command.index(flag) + 1]
+    return [str(home / 'build/neuronte-media-decode'), str(video), value('-ss'), value('-vf'), arm['pix_fmt'],
+            value('-threads:v'), value('-filter_threads'), str(frames)]
+
+
+def decoder_scenarios(module, home, video, width, height, start, frames, repeats, warmup, arms):
     probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_streams',
                             '-show_format', '-of', 'json', str(video)], capture_output=True, text=True, check=True)
     metadata = json.loads(probe.stdout)
@@ -191,36 +248,100 @@ def decoder_scenarios(module, video, width, height, start, frames, repeats, warm
         chroma = None
     rows, reference = [], None
     for repetition in range(warmup + repeats):
-        offset = repetition % len(thread_pairs)
-        for decoder, encoder in thread_pairs[offset:] + thread_pairs[:offset]:
+        offset = repetition % len(arms)
+        for arm in arms[offset:] + arms[:offset]:
             load_before = list(os.getloadavg())
-            command = module.decoder_command(video, width, height, fps, start=start, chroma=chroma,
-                                             decoder_threads=decoder, output_threads=encoder)
-            command[-1:-1] = ['-frames:v', str(frames)]
-            row = measure_decoder(command, width, height, frames)
+            command = arm_command(module, home, arm, video, width, height, fps, start, chroma, frames)
+            row = measure_decoder(command, width, height, frames, planar=arm['pix_fmt'] == 'gbrp')
             if reference is None:
                 reference = row['hashes']
             row['exact_rgb'] = row['hashes'] == reference
             if not row['exact_rgb']:
-                raise ValueError('thread configuration changed decoded pixels')
-            row.update(decoder_threads=decoder, output_threads=encoder, repetition=repetition,
-                       warmup=repetition < warmup, load_before=load_before, loadavg=list(os.getloadavg()),
-                       command=['<video>' if str(item) == str(video) else item for item in command])
+                raise ValueError(f'{arm["name"]} changed decoded pixels')
+            row.update(arm=arm['name'], engine=arm['engine'], pix_fmt=arm['pix_fmt'],
+                       decoder_threads=arm['decoder_threads'], output_threads=arm['output_threads'],
+                       repetition=repetition, warmup=repetition < warmup, load_before=load_before,
+                       loadavg=list(os.getloadavg()),
+                       command=['<video>' if str(item) == str(video) else
+                                '<home>/' + Path(item).name if str(item).startswith(str(home) + '/') else item
+                                for item in command])
             rows.append(row)
     scenarios = []
-    for decoder, encoder in thread_pairs:
-        selected = [r for r in rows if not r['warmup'] and
-                    (r['decoder_threads'], r['output_threads']) == (decoder, encoder)]
-        scenarios.append(scenario(f'decode_{decoder}_raw_{encoder}', 'decode, scale and pipe one frame',
+    for arm in arms:
+        selected = [r for r in rows if not r['warmup'] and r['arm'] == arm['name']]
+        scenarios.append(scenario(arm['name'], 'decode, scale and pipe one frame',
             [r['wall_seconds']/frames for r in selected], dict(
                 cpu=summarize([r['cpu_seconds']/frames for r in selected]),
                 first_frame=summarize([r['first_frame_seconds'] for r in selected]),
                 max_rss_kib=[r['max_rss_kib'] for r in selected], exact_rgb=True,
-                decoder_threads=decoder, output_threads=encoder)))
+                engine=arm['engine'], pix_fmt=arm['pix_fmt'],
+                decoder_threads=arm['decoder_threads'], output_threads=arm['output_threads'])))
     source = {key: stream[key] for key in ('codec_name', 'width', 'height', 'pix_fmt', 'r_frame_rate',
                                           'color_space', 'color_range', 'chroma_location') if key in stream}
     source.update(sha256=sha(video), start=start, frames=frames)
-    return scenarios, rows, source
+    return scenarios, rows, source, dict(fps=fps, chroma=chroma, duration=float(metadata['format']['duration']))
+
+
+def seek_scenarios(module, home, video, width, height, clip, start, repeats, warmup):
+    """The first frame after a start or seek, as the player gets it: from the
+    command (process start, open, probe, accurate seek and the first frame
+    through its pipe) or from the in-process decoder (open, probe, seek and
+    the first frame). Both must give the same frame. In-process CPU is this
+    process's, over open to close, so it includes the decoder's threads."""
+    import numpy as np
+    library = home / 'build/libneuronte-media.so'
+    if not library.exists() or not hasattr(module, 'MediaDecoder'):
+        return [], []
+    media = module.MediaDecoder(library)
+    fps, chroma = clip['fps'], clip['chroma']
+    starts = [round(start + offset, 3) for offset in SEEK_OFFSETS
+              if start + offset + 1 / fps <= clip['duration']]
+    if not starts:
+        return [], []
+    order = [(position, engine) for position in starts for engine in ('command', 'library')]
+    planes = np.empty((3, height, width), np.uint8)
+    rows = []
+    for repetition in range(warmup + repeats):
+        offset = repetition % len(order)
+        for position, engine in order[offset:] + order[:offset]:
+            load_before = list(os.getloadavg())
+            if engine == 'command':
+                command = module.decoder_command(video, width, height, fps, start=position, chroma=chroma,
+                                                 pix_fmt='gbrp')
+                command[-1:-1] = ['-frames:v', '1']
+                run = measure_decoder(command, width, height, 1, planar=True)
+                first, used, digest = run['first_frame_seconds'], run['cpu_seconds'], run['hashes'][0]
+            else:
+                process, begin = time.process_time(), time.perf_counter()
+                stream = media.open(video, width, height, fps, start=position, chroma=chroma, pix_fmt='gbrp')
+                if stream is None:
+                    raise ValueError('the in-process decoder declined the benchmark input')
+                try:
+                    frame = stream.read()
+                    first = time.perf_counter() - begin
+                    if frame is None:
+                        raise ValueError(f'no frame from {position} s: {stream.failure}')
+                    stream.copy(frame, planes)
+                finally:
+                    stream.close()
+                used = time.process_time() - process
+                digest = packed_hash(planes, width, height)
+            rows.append(dict(engine=engine, start=position, first_frame_seconds=first, cpu_seconds=used,
+                             hash=digest, repetition=repetition, warmup=repetition < warmup,
+                             load_before=load_before, loadavg=list(os.getloadavg())))
+    for position in starts:
+        if len({r['hash'] for r in rows if r['start'] == position}) != 1:
+            raise ValueError(f'the decoders gave different first frames from {position} s')
+    scenarios = []
+    for engine in ('command', 'library'):
+        selected = [r for r in rows if not r['warmup'] and r['engine'] == engine]
+        scenarios.append(scenario(f'seek_{engine}', 'start or seek to the first complete frame',
+            [r['first_frame_seconds'] for r in selected], dict(
+                cpu=summarize([r['cpu_seconds'] for r in selected]), cpu_unit='seek',
+                exact_rgb=True, starts=starts,
+                by_start={str(p): summarize([r['first_frame_seconds'] for r in selected if r['start'] == p])
+                          for p in starts})))
+    return scenarios, rows
 
 
 def main(argv=None):
@@ -244,12 +365,16 @@ def main(argv=None):
     model = identity(home)
     scenarios = kernel_scenarios(home, args.baseline_neuronte, args.width, args.height,
                                 args.repeats, args.warmup, min(args.frames, 24))
-    rows, source = [], None
+    rows, seek_rows, source = [], [], None
     if args.video:
         module = load_module(home / 'tools/neuronte_video.py', 'video_decode')
-        decoded, rows, source = decoder_scenarios(module, args.video.resolve(), args.width, args.height,
-            args.start, args.frames, args.repeats, args.warmup, [(0,0), (0,1), (1,1), (2,1), (4,1)])
+        video = args.video.resolve()
+        decoded, rows, source, clip = decoder_scenarios(module, home, video, args.width, args.height,
+            args.start, args.frames, args.repeats, args.warmup, decoder_arms(module, home))
         scenarios.extend(decoded)
+        seeks, seek_rows = seek_scenarios(module, home, video, args.width, args.height, clip, args.start,
+                                          args.repeats, args.warmup)
+        scenarios.extend(seeks)
     import numpy as np
     ffmpeg = shutil.which('ffmpeg') if args.video else None
     decoder = dict(version=subprocess.check_output([ffmpeg, '-version'], text=True).splitlines()[0],
@@ -259,7 +384,9 @@ def main(argv=None):
                    python=platform.python_version(), machine=platform.machine(),
                    size=[args.width, args.height], model=model, scenarios=scenarios,
                    note='Offscreen RGB work; no physical display FPS. Decoder first frame includes seek/startup.',
-                   decoder_runs=rows, source=source,
+                   decoder_runs=rows, seek_runs=seek_rows, source=source,
+                   media_library_sha256=sha(home / 'build/libneuronte-media.so')
+                   if (home / 'build/libneuronte-media.so').exists() else None,
                    decoder=decoder, numpy=np.__version__,
                    baseline=identity(args.baseline_neuronte) if args.baseline_neuronte else model,
                    loadavg=list(os.getloadavg()))

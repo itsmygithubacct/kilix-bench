@@ -3,8 +3,9 @@
 Offscreen frame-path measurements for Kilix: how long a Kilix 95 desk takes to
 redraw, how many bytes the graphics SDK would send for a change, and how a
 full grid of text compares as Kitty cells, Kitty graphics, and Neuronte.
-The video suite measures Neuronte's RGB composition, shared-memory transport
-and FFmpeg decoder thread choices at a specified pixel size.
+The video suite measures Neuronte's RGB composition, shared-memory transport,
+FFmpeg decoder thread choices and its in-process decoder, including the first
+frame after a seek, at a specified pixel size.
 
 Not shipped: a development tool run from a checkout. No Plebian-OS release,
 Kilix or catalog tree references it.

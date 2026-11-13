@@ -110,7 +110,9 @@ def main(argv=None):
     src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
     env.update(extra_env)
-    timeout = max(180, (args.repeats + args.warmup) * 5 * 65) if args.suite == 'video' else 180
+    # At most eight decoder arms and six start/seek cells per repetition,
+    # plus the kernel measurements. The child retains its own per-run bounds.
+    timeout = max(180, (args.repeats + args.warmup) * 14 * 65 + 180) if args.suite == 'video' else 180
     payload = _run(command, env, root, timeout=timeout)
     stamped, _latest, text = write_run(payload, forbidden=tuple(forbidden))
     sys.stdout.write(render_text(payload))

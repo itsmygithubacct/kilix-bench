@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from kilix_bench.isolate import sandbox
 from kilix_bench.terminal import ConsumerTerm
-from kilix_bench.video import measure_decoder
+from kilix_bench.video import arm_command, decoder_arms, measure_decoder
 
 
 class VideoTest(unittest.TestCase):
@@ -24,6 +24,54 @@ class VideoTest(unittest.TestCase):
         self.assertGreater(result['cpu_seconds'], 0)
         self.assertGreater(result['max_rss_kib'], 0)
         self.assertGreaterEqual(result['wall_seconds'], result['first_frame_seconds'])
+
+    def test_planar_frames_hash_as_packed_rgb(self):
+        # G plane, B plane, R plane of a 2x1 frame; packed it is R G B R G B.
+        command = [sys.executable, '-c', "import os; os.write(1,b'gGbBrR')"]
+        result = measure_decoder(command, 2, 1, 1, planar=True)
+        self.assertEqual(result['hashes'], [hashlib.sha256(b'rgbRGB').hexdigest()])
+
+    def test_library_arm_passes_the_commands_own_arguments(self):
+        class Module:
+            @staticmethod
+            def decoder_command(video, width, height, fps, *, start=0., chroma=None, decoder_threads=0,
+                                output_threads=1, pix_fmt='rgb24'):
+                return ['ffmpeg', '-filter_threads', '1', '-threads:v', str(decoder_threads),
+                        '-ss', f'{start:.3f}', '-i', str(video), '-vf', f'fps={fps},scale={width}:{height}',
+                        '-threads:v', str(output_threads), '-f', 'rawvideo', '-pix_fmt', pix_fmt, '-']
+        home = Path('/tree')
+        library = dict(name='library_0_gbrp', engine='library', decoder_threads=0, output_threads=None,
+                       pix_fmt='gbrp')
+        self.assertEqual(arm_command(Module, home, library, 'v.mp4', 945, 531, 30., 20., None, 240),
+                         ['/tree/build/neuronte-media-decode', 'v.mp4', '20.000', 'fps=30.0,scale=945:531',
+                          'gbrp', '0', '1', '240'])
+        command = dict(library, engine='command', output_threads=1, name='decode_0_raw_1_gbrp')
+        self.assertEqual(arm_command(Module, home, command, 'v.mp4', 945, 531, 30., 20., None, 240),
+                         ['ffmpeg', '-filter_threads', '1', '-threads:v', '0', '-ss', '20.000', '-i', 'v.mp4',
+                          '-vf', 'fps=30.0,scale=945:531', '-threads:v', '1', '-f', 'rawvideo',
+                          '-pix_fmt', 'gbrp', '-frames:v', '240', '-'])
+
+    def test_decoder_arms_follow_what_the_tree_supports(self):
+        class Old:
+            @staticmethod
+            def decoder_command(video, width, height, fps, *, start=0., chroma=None, decoder_threads=0,
+                                output_threads=1):
+                return []
+
+        class New:
+            @staticmethod
+            def decoder_command(video, width, height, fps, *, start=0., chroma=None, decoder_threads=0,
+                                output_threads=1, pix_fmt='rgb24'):
+                return []
+        with tempfile.TemporaryDirectory() as root:
+            home = Path(root)
+            names = lambda module: [arm['name'] for arm in decoder_arms(module, home)]
+            pairs = ['decode_0_raw_0', 'decode_0_raw_1', 'decode_1_raw_1', 'decode_2_raw_1', 'decode_4_raw_1']
+            self.assertEqual(names(Old), pairs)
+            self.assertEqual(names(New), pairs + ['decode_0_raw_1_gbrp'])
+            (home / 'build').mkdir()
+            (home / 'build/neuronte-media-decode').touch()
+            self.assertEqual(names(New), pairs + ['decode_0_raw_1_gbrp', 'library_0_rgb24', 'library_0_gbrp'])
 
     def test_bad_frame_count_and_partial_frame(self):
         for raw, count in ((b'abcdef', 2), (b'abcdefg', 1), (b'abcdefghijkl', 1)):
