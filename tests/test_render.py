@@ -77,7 +77,8 @@ class RenderSuiteTest(unittest.TestCase):
                     }],
                 }
                 stamped, latest, text = write_run(payload)
-                self.assertTrue(str(stamped).endswith("-kilix-render.json"))
+                self.assertIn("-kilix-render-", stamped.name)
+                self.assertEqual(stamped.suffix, ".json")
                 self.assertEqual(latest.name, "kilix-render-latest.json")
                 self.assertFalse((Path(temporary) / "results"
                                   / "kilix-95-latest.json").exists())

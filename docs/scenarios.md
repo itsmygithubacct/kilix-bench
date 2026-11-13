@@ -65,9 +65,9 @@ placement.
 The frame is snapped down to whole 8 by 16 cells. One sample is one
 full-grid rewrite on that grid, which is the bench frame, not the live pane.
 The suite needs soft-raster's shared library, Neuronte's shared library, and
-`neuronte-split-v4.nrt`. It looks for them under
+`neuronte-split-v5.nrt`. It looks for them under
 `~/gpu_terminal/kilix-modules/soft-raster/build/` and `~/projects/neuronte/`
-(or `$NEURONTE`). `SOFT_RASTER_LIBRARY`, `NEURONTE_LIBRARY`, and
+(or `$NEURONTE_HOME`, then `$NEURONTE`). `SOFT_RASTER_LIBRARY`, `NEURONTE_LIBRARY`, and
 `NEURONTE_WEIGHTS` override those paths.
 
 | Scenario | Measures |
@@ -78,7 +78,7 @@ The suite needs soft-raster's shared library, Neuronte's shared library, and
 | `neuronte_repeat` | Neuronte drawing that same screen, after the cell cache is warm |
 | `bitmap_ascii` | The bitmap font, printable ASCII cycling across the grid |
 | `neuronte_ascii` | Neuronte drawing that ASCII grid, cache warm |
-| `neuronte_cold` | `neuronte_coverage` of the 95 ASCII characters, which does not use the cache |
+| `neuronte_cold` | `neuronte_coverage` of the 95 ASCII characters after weights are loaded; this bypasses the draw cache and does not measure process or filesystem cold start |
 | `kitty_shm` | Shared-memory placement of the bitmap ASCII frame |
 | `kitty_inline` | Inline placement of that frame |
 | `neuronte_inline` | Inline placement of the Neuronte ASCII frame |

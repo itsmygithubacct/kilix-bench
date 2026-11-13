@@ -2,7 +2,10 @@
 
 import json
 import os
+import math
+import re
 import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +38,8 @@ def summarize(samples):
     """samples are seconds. Returned times are milliseconds."""
     if not samples:
         raise ValueError("a measurement needs at least one sample")
+    if any(not math.isfinite(value) or value < 0 for value in samples):
+        raise ValueError("timings must be finite and non-negative")
     ordered = sorted(samples)
     count = len(ordered)
 
@@ -55,6 +60,7 @@ def summarize(samples):
         "min_ms": ms(ordered[0]),
         "median_ms": ms(at(0.5)),
         "p95_ms": ms(at(0.95)),
+        "p99_ms": ms(at(0.99)),
         "max_ms": ms(ordered[-1]),
     }
 
@@ -62,6 +68,7 @@ def summarize(samples):
 def scenario(name, what, samples, extra=None):
     row = {"name": name, "what": what, "unit": "ms"}
     row.update(summarize(samples))
+    row["raw_seconds"] = list(samples)
     if extra:
         row["extra"] = extra
     return row
@@ -145,19 +152,29 @@ def write_run(payload, forbidden=(), slug=None):
     directory = results_dir()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     name = slug or payload.get("subject") or "kilix-95"
-    stamped = directory / f"{stamp}-{name}.json"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+        raise ValueError("invalid result subject")
     latest = directory / f"{name}-latest.json"
     text = directory / f"{name}-latest.txt"
     body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     rendered = render_text(payload)
-    _replace(stamped, body)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                     prefix=f"{stamp}-{name}-", suffix=".json", delete=False) as stream:
+        stamped = Path(stream.name)
+        stream.write(body)
     _replace(latest, body)
     _replace(text, rendered)
     return stamped, latest, text
 
 
 def _replace(path, text):
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(text, encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name + "-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

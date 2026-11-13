@@ -2,8 +2,8 @@
 
 The workload is one full-grid rewrite. ``kitty_text`` is the stream from
 vtebench's light_cells benchmark: cursor home, then the same character in
-every cell. Kitty rasterizes that stream with its own font, on the GPU,
-and that raster is not in the time. ``bitmap_*`` is Kilix's bitmap font
+every cell. The terminal's glyph rasterization and GPU drawing are outside
+the measurement. ``bitmap_*`` is Kilix's bitmap font
 drawn by soft-raster into a pixel buffer. ``neuronte_*`` is the same grid
 drawn by Neuronte into the same kind of buffer. The Kitty graphics
 samples are FramePresenter placements of those buffers. ``sixel`` is the
@@ -168,16 +168,17 @@ def libraries():
     The caller passes these into the measurement process. They are not
     written into the result.
     """
+    home = os.environ.get("NEURONTE_HOME") or os.environ.get("NEURONTE", "~/projects/neuronte")
     return {
         "NEURONTE_LIBRARY": _pick("NEURONTE_LIBRARY", (
             os.path.join(
-                os.environ.get("NEURONTE", "~/projects/neuronte"),
+                home,
                 "build", "libneuronte.so"),
         )),
         "NEURONTE_WEIGHTS": _pick("NEURONTE_WEIGHTS", (
             os.path.join(
-                os.environ.get("NEURONTE", "~/projects/neuronte"),
-                "weights", "neuronte-split-v4.nrt"),
+                home,
+                "weights", "neuronte-split-v5.nrt"),
         )),
         "SOFT_RASTER_LIBRARY": _pick("SOFT_RASTER_LIBRARY", (
             "~/gpu_terminal/kilix-modules/soft-raster/build/libsoft-raster.so",
@@ -449,7 +450,7 @@ def _measure(args, graphics, raster, neuronte, handle, weights,
         "repeats": args.repeats,
         "warmup": args.warmup,
         "font": os.path.basename(weights),
-        "weights_sha256": digest[:16],
+        "weights_sha256": digest,
         "parameters": neuronte.neuronte_parameters(handle),
         "nets": neuronte.neuronte_nets(handle),
         "note": (
@@ -460,7 +461,8 @@ def _measure(args, graphics, raster, neuronte, handle, weights,
             "bitmap is soft-raster's 8x16 font. "
             "neuronte_repeat and neuronte_ascii are steady-state draws, "
             "after the cell cache is warm. neuronte_cold is coverage of "
-            "the 95 ASCII characters with no cache. "
+            "the 95 ASCII characters with no cache, after weights are loaded; "
+            "it is not process or filesystem cold start. "
             "Graphics times are FramePresenter and do not include the GPU. "
             "sixel is a two-colour encoding of the bitmap letter frame. "
             "Its time is this encoder; its wire size is the comparison."),

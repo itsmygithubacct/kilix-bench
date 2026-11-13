@@ -6,25 +6,29 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from kilix_bench.isolate import kilix_home_from_env, sandbox
-from kilix_bench.report import render_text, write_run
+from kilix_bench.report import render_text, results_dir, write_run
 
 
 def _parser():
     parser = argparse.ArgumentParser(prog="kilix-bench")
     parser.add_argument(
-        "--suite", choices=("desktop", "render", "text"), default="desktop",
+        "--suite", choices=("desktop", "render", "text", "fonts"), default="desktop",
         help="desktop measures a Kilix 95 desk; render measures the graphics SDK; "
-             "text compares Kitty cells, Kitty graphics, and Neuronte")
+             "text compares application frame paths; fonts compares Neuronte and FreeType")
     parser.add_argument("--desktop", default="",
                         help="Path of a Kilix 95 checkout (desktop suite)")
     parser.add_argument("--kilix-home", default="",
                         help="Kilix host checkout that contains config/kilix_sdk")
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
-    parser.add_argument("--repeats", type=int, default=12)
+    parser.add_argument("--repeats", type=int, default=None)
     parser.add_argument("--warmup", type=int, default=2)
+    from kilix_bench.fonts import add_arguments
+    add_arguments(parser)
     return parser
 
 
@@ -36,10 +40,10 @@ def _parse_argv(argv):
     return _parser().parse_args(argv)
 
 
-def _run(command, env, root):
+def _run(command, env, root, timeout=180):
     try:
         result = subprocess.run(
-            command, env=env, capture_output=True, text=True, timeout=180)
+            command, env=env, capture_output=True, text=True, timeout=timeout)
     finally:
         shutil.rmtree(root, ignore_errors=True)
     if result.returncode != 0:
@@ -51,9 +55,13 @@ def _run(command, env, root):
 
 def main(argv=None):
     args = _parse() if argv is None else _parse_argv(argv)
+    if args.repeats is None:
+        args.repeats = 20 if args.suite == "fonts" else 12
     kilix_home = args.kilix_home or kilix_home_from_env()
-    if not kilix_home or not os.path.isdir(os.path.join(kilix_home, "config")):
+    if args.suite != "fonts" and (not kilix_home or not os.path.isdir(os.path.join(kilix_home, "config"))):
         raise SystemExit("pass --kilix-home pointing at a Kilix checkout")
+    if args.suite == "fonts":
+        return _fonts(args, kilix_home)
     env, root = sandbox(os.path.abspath(kilix_home))
     src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
@@ -87,6 +95,45 @@ def main(argv=None):
     sys.stdout.write(render_text(payload))
     sys.stdout.write(f"\nresults {stamped}\ntext {text}\n")
     return 0
+
+
+def _fonts(args, kilix_home):
+    from kilix_bench.fonts import inputs
+    try:
+        paths = inputs(args)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    # The CPU font comparison needs no running host or state library.
+    env, root = sandbox(os.path.abspath(kilix_home) if kilix_home else "", require_state=False)
+    try:
+        src = str(Path(__file__).resolve().parents[1])
+        env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ-fonts")
+        artifacts = results_dir() / stamp
+        artifacts.mkdir(mode=0o700)
+        env["KILIX_BENCH_ARTIFACT_DIR"] = str(artifacts)
+        env["NEURONTE_LIBRARY"] = str(paths["library"])
+        env["NEURONTE_WEIGHTS"] = str(paths["weights"])
+        command = [sys.executable, "-m", "kilix_bench.fonts", "--font", str(paths["font"]),
+                   "--font-license", str(paths["font_license"]), "--cells",
+                   ",".join(f"{w}x{h}" for w, h in args.cells), "--corpora", args.corpora,
+                   "--raster-calls", str(args.raster_calls), "--frames", str(args.frames),
+                   "--cache-entries", str(args.cache_entries), "--churn-entries", str(args.churn_entries),
+                   "--hinting", args.hinting, "--seed", str(args.seed),
+                   "--job-timeout", str(args.job_timeout),
+                   "--repeats", str(args.repeats), "--warmup", str(args.warmup)]
+        if args.cpu is not None:
+            command += ["--cpu", str(args.cpu)]
+        # Each native job has its own 180s bound. A campaign is many jobs.
+        payload = _run(command, env, root, timeout=None)
+        payload["artifact_directory"] = artifacts.name
+        forbidden = (str(Path.home()), *(str(path) for path in paths.values()))
+        stamped, _, text = write_run(payload, forbidden=forbidden)
+        sys.stdout.write(render_text(payload))
+        sys.stdout.write(f"\nresults {stamped}\ntext {text}\nartifacts {artifacts}\n")
+        return 0
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

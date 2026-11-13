@@ -1,0 +1,22 @@
+name: test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  fonts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libfreetype6-dev fonts-dejavu-core python3-pil python3-numpy
+      - name: Fetch the selected Neuronte runtime
+        run: |
+          git init -q /tmp/neuronte-test
+          git -C /tmp/neuronte-test fetch -q --depth 1 https://github.com/itsmygithubacct/neuronte.git 08c9ef21fafa3ad6e7e859ce178efd61d46100f4
+          git -C /tmp/neuronte-test checkout -q --detach FETCH_HEAD
+          make -C /tmp/neuronte-test build/libneuronte.so
+      - name: Python and native integration tests
+        env:
+          NEURONTE_HOME: /tmp/neuronte-test
+          PYTHONPATH: src
+        run: python3 -m unittest discover -s tests -v

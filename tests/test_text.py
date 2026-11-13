@@ -92,7 +92,8 @@ class TextSuiteTest(unittest.TestCase):
                 }
                 stamped, latest, text = write_run(
                     payload, forbidden=("/projects/neuronte",))
-                self.assertTrue(str(stamped).endswith("-kilix-text.json"))
+                self.assertIn("-kilix-text-", stamped.name)
+                self.assertEqual(stamped.suffix, ".json")
                 self.assertEqual(latest.name, "kilix-text-latest.json")
                 mode = stat.S_IMODE(latest.stat().st_mode)
                 self.assertEqual(mode & 0o077, 0)

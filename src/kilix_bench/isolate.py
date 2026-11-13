@@ -21,12 +21,15 @@ def state_library():
     return ""
 
 
-def sandbox(kilix_home):
+def sandbox(kilix_home, require_state=True):
     """Environment for one offscreen desk. The caller deletes the directory."""
     env = {
         key: value for key, value in os.environ.items()
         if not key.startswith(_STRIP)
     }
+    library = state_library() if require_state else ""
+    if require_state and not library:
+        raise SystemExit("the Kilix state library is not built")
     root = tempfile.mkdtemp(prefix="kilix-bench-")
     home = os.path.join(root, "home")
     data_root = os.path.join(root, "gpu-terminal-data")
@@ -60,10 +63,8 @@ def sandbox(kilix_home):
         "XDG_DATA_HOME": os.path.join(root, "xdg", "data"),
         "XDG_DATA_DIRS": os.path.join(root, "xdg", "system"),
         "PYTHONDONTWRITEBYTECODE": "1",
-        "KILIX_STATE_LIBRARY": state_library(),
+        "KILIX_STATE_LIBRARY": library,
     })
-    if not env["KILIX_STATE_LIBRARY"]:
-        raise SystemExit("the Kilix state library is not built")
     os.makedirs(env["KILIX_DESKTOP_DIR"], mode=0o700)
     return env, root
 

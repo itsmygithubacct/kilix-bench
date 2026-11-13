@@ -14,5 +14,12 @@ authors = [{name = "itsmygithubacct"}]
 [project.scripts]
 kilix-bench = "kilix_bench.__main__:main"
 
+[project.optional-dependencies]
+fonts = ["Pillow>=9"]
+test = ["Pillow>=9", "numpy>=1.24"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kilix_bench = ["font_worker.c"]

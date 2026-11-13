@@ -3,6 +3,8 @@
 Offscreen frame-path measurements for Kilix: how long a Kilix 95 desk takes to
 redraw, how many bytes the graphics SDK would send for a change, and how a
 full grid of text compares as Kitty cells, Kitty graphics, and Neuronte.
+The font suite compares Neuronte with FreeType in native CPU loops, using
+the same mask cache and compositor for both.
 
 Not shipped: a development tool run from a checkout. No Plebian-OS release,
 Kilix or catalog tree references it.
@@ -20,7 +22,8 @@ into that same protocol. It also encodes the bitmap frame as sixel.
 
 A desktop compose time is the redraw inside the desk. A render time is the
 graphics library. A text time is the application side of one rewrite. None
-of them includes Kitty's GPU font raster.
+of them includes the terminal's glyph rasterization or GPU drawing. The font
+suite measures glyph rasterization directly, without a terminal.
 
 - Runs each suite in a child process with a private temporary home, so the
   live Kilix and Kilix 95 data directories are never touched.
@@ -35,6 +38,9 @@ of them includes Kitty's GPU font raster.
 PYTHONPATH=src python3 -m kilix_bench --desktop /path/to/kilix-95
 PYTHONPATH=src python3 -m kilix_bench --suite render
 PYTHONPATH=src python3 -m kilix_bench --suite text
+PYTHONPATH=src python3 -m kilix_bench --suite fonts \
+  --neuronte-home /path/to/neuronte \
+  --font /path/to/monospace.ttf --font-license /path/to/font-licence.txt
 ```
 
 `--suite desktop` is the default and needs `--desktop`. `--suite render` and
@@ -43,11 +49,18 @@ PYTHONPATH=src python3 -m kilix_bench --suite text
 directory is used.
 
 The text suite also needs soft-raster's shared library, Neuronte's shared
-library, and `neuronte-split-v4.nrt`. It looks for them under
+library, and `neuronte-split-v5.nrt`. It looks for them under
 `~/gpu_terminal/kilix-modules/soft-raster/build/` and
-`~/projects/neuronte/` (or `$NEURONTE`). `SOFT_RASTER_LIBRARY`,
+`~/projects/neuronte/` (or `$NEURONTE_HOME`, then `$NEURONTE`). `SOFT_RASTER_LIBRARY`,
 `NEURONTE_LIBRARY`, and `NEURONTE_WEIGHTS` override those paths. The result
-records the weight file's name and a short hash, not the path.
+records the weight file's name and full SHA256, not the path.
+
+The font suite needs a C compiler, `pkg-config`, FreeType development headers
+and Pillow (`pip install '.[fonts]'`). It requires no Kilix checkout or state
+library. It records the exact font, licence, model, library and worker hashes,
+raw paired trials, cache hits/misses, clipped ink, output checksums and PNG
+previews. Its terminal cells use a scalable monospace font. See
+[the font protocol](docs/fonts.md) for controls, limits and interpretation.
 
 The live desktop is not started. Desktop state for the run is a temporary
 directory and is removed when the run finishes.
@@ -65,11 +78,11 @@ directory: the parent stops before starting either suite when it is missing.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--suite desktop\|render\|text` | `desktop` | What to measure |
+| `--suite desktop\|render\|text\|fonts` | `desktop` | What to measure |
 | `--desktop PATH` | none | Kilix 95 checkout (desktop suite; must contain `main.py`) |
 | `--kilix-home PATH` | `KILIX_HOME`, else `~/.local/gpu_terminal/sources/kilix` | Kilix checkout with `config/kilix_sdk` |
 | `--width N` / `--height N` | `1920` / `1080` | Frame size |
-| `--repeats N` | `12` | Timed samples per scenario |
+| `--repeats N` | `20` for fonts, otherwise `12` | Timed samples per scenario |
 | `--warmup N` | `2` | Untimed samples first |
 | `KILIX_BENCH_HOME` | `~/.local/gpu_terminal/kilix-bench` | Where results are written |
 
@@ -101,7 +114,7 @@ scenario, and how to read the rectangle and byte counts, is in
 Each run writes three files under `~/.local/gpu_terminal/kilix-bench/results/`.
 The desktop suite uses the `kilix-95` name. The render suite uses `kilix-render`.
 
-- `YYYYMMDDTHHMMSSZ-<suite>.json`, the run that just finished
+- `YYYYMMDDTHHMMSSZ-<suite>-<unique>.json`, the run that just finished
 - `<suite>-latest.json`, the same record
 - `<suite>-latest.txt`, the same numbers as text
 
@@ -121,6 +134,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 | Document | Contents |
 |---|---|
 | [docs/scenarios.md](docs/scenarios.md) | Every desktop, render, and text scenario, and how damage, scroll and inline bytes are counted |
+| [docs/fonts.md](docs/fonts.md) | Paired Neuronte/FreeType measurements, shared caching, coverage and image validation |
 
 ## Related repositories
 
