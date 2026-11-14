@@ -29,6 +29,8 @@ def add_arguments(parser):
                         help="SHA256-bound ASCII spatial/repertoire manifest; compare all its cases")
     experiments.add_argument("--expert-experiment", default="",
                         help="SHA256-bound decomposition manifest for an explicit expert repertoire")
+    experiments.add_argument("--face-experiment", default="",
+                        help="SHA256-bound desktop-face manifest: whole faces at their em (kilix_bench.face)")
     parser.add_argument("--experiment-quality-only", action="store_true",
                         help="validate a manifest's routes and quality without running timing jobs")
     parser.add_argument("--experts", default="all", help="all, or comma-separated: " +
@@ -40,6 +42,9 @@ def add_arguments(parser):
 
 
 def inputs(args):
+    if getattr(args, "face_experiment", ""):
+        from kilix_bench.face import inputs as face_inputs
+        return face_inputs(args)
     if getattr(args, "expert_experiment", ""):
         from kilix_bench.decomposition import inputs as experiment_inputs
         return experiment_inputs(args, family="expert")
@@ -94,6 +99,9 @@ def check_trial(row, raw, expected, case, count, calls):
 
 
 def measure(args):
+    if getattr(args, "face_experiment", ""):
+        from kilix_bench.face import measure as face_measure
+        return face_measure(args)
     if getattr(args, "expert_experiment", ""):
         from kilix_bench.decomposition import measure as experiment_measure
         return experiment_measure(args, family="expert")

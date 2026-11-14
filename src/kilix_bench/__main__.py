@@ -19,7 +19,7 @@ def _parser():
         "--suite", choices=("desktop", "render", "text", "fonts", "neuronte"), default="desktop",
         help="desktop measures a Kilix 95 desk; render measures the graphics SDK; "
              "text compares application frame paths; fonts compares Neuronte and FreeType; "
-             "neuronte measures every split-v5 expert")
+             "neuronte measures every split-v5 expert, or a decomposition or desktop-face manifest")
     parser.add_argument("--desktop", default="",
                         help="Path of a Kilix 95 checkout (desktop suite)")
     parser.add_argument("--kilix-home", default="",
@@ -142,6 +142,8 @@ def _fonts(args, kilix_home):
                 command += ["--ascii-experiment", str(paths["experiment"])]
             if args.expert_experiment:
                 command += ["--expert-experiment", str(paths["experiment"])]
+            if args.face_experiment:
+                command += ["--face-experiment", str(paths["experiment"])]
             if args.experiment_quality_only:
                 command += ["--experiment-quality-only"]
         else:

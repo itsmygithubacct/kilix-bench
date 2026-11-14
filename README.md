@@ -144,6 +144,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 | [docs/fonts.md](docs/fonts.md) | Paired Neuronte/FreeType measurements, shared caching, coverage and image validation |
 | [docs/neuronte.md](docs/neuronte.md) | Complete split-v5 expert timings, runtime cache states and RC9 startup boundaries |
 | [docs/resume.md](docs/resume.md) | Preserve native experiment trials across scheduling gaps |
+| [docs/faces.md](docs/faces.md) | A whole desktop face at its em through a desktop's calls: open, uncached coverage, cold and primed drawing, checked against the drawing |
 | [docs/braille.md](docs/braille.md) | Compare Braille designs from 1×48 through 48×1, including quality, routing and caches |
 
 ## Related repositories
