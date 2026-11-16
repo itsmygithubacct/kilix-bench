@@ -1,8 +1,8 @@
 #!/bin/sh
-# Show, in every pane, each character Neuronte 2, Neuronte 0.1.4 and DejaVu all have.
+# Print each character Neuronte 2, Neuronte 0.1.4 and DejaVu all have.
+# Run it at the prompt of a side-by-side pane: all three panes run it, and
+# each draws the characters with its own face.
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"
-"$here/send.sh" --clear
-python3 "$here/charsets.py" common "$@" | "$here/send.sh"
+python3 "$here/charsets.py" common "$@"
 python3 "$here/charsets.py" summary | head -6
-echo "PgUp and PgDn in a pane scroll all three."

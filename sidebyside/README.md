@@ -1,8 +1,9 @@
 # Side by side: Neuronte 2, Neuronte 0.1.4 and DejaVu
 
-Three terminal panes in one Kilix tab draw the same text, each with its own
-face. A character typed in any pane goes to all three, so the same text can
-be read side by side.
+Three panes in one Kilix tab, each a bash shell in this folder whose text is
+drawn by a different face. A character typed in any pane goes to all three
+shells, so they run the same commands and the same output can be read side
+by side.
 
 | Pane | Draws with | Set by |
 |---|---|---|
@@ -14,9 +15,11 @@ Neuronte 0.1.4 also carries `neuronte-split-v9.nrt`, the same file Neuronte
 2.2.0 ships. `NEURONTE_014_BUNDLE=neuronte-split-v9.nrt` puts it in the middle
 pane; the two Neuronte panes then show the same pixels.
 
-Each pane draws its text as pixels and shows them with the Kitty graphics
-protocol at the size they were drawn, so what is on screen is the face's own
-output and not the terminal's font.
+Each pane draws what its shell prints as pixels and shows them with the
+Kitty graphics protocol at the size they were drawn, so what is on screen is
+the face's own output and not the terminal's font. The shell sees
+`TERM=dumb`: it prints plain text, and full-screen programs do not work in
+it.
 
 ## Set it up
 
@@ -35,26 +38,31 @@ directories.
 
 ```sh
 sidebyside/launch.sh              # open the tab; run it from a Kilix pane
-sidebyside/send.sh 'some text'    # send text to all three from anywhere
-sidebyside/show-common.sh         # every character all three have
-sidebyside/show-dejavu-only.sh    # every character DejaVu has and Neuronte does not
-sidebyside/charsets.py summary    # the counts, block by block
-sidebyside/bench.sh               # time the three
+```
+
+Then, at the prompt in any of the three panes:
+
+```sh
+./show-common.sh                  # every character all three have
+./show-dejavu-only.sh             # every character DejaVu has and Neuronte does not
+./charsets.py summary             # the counts, block by block
+./bench.sh                        # time the three (each pane runs it; use one machine at a time)
+echo '✓ ≤ ¼ Ήταν Їжак ┌─┐'        # or anything else a shell prints
 ```
 
 Keys in a pane act on all three:
 
 | Key | Does |
 |---|---|
-| Enter, Backspace | as in a terminal |
 | PgUp, PgDn | scroll |
-| Ctrl-L | clear the text |
-| Ctrl-T | next cell size: 8x16, 12x24, 16x32, 24x48 |
-| Ctrl-U | mark the characters a face does not have, on and off |
-| Ctrl-C | close that pane |
+| F2 | next cell size: 8x16, 12x24, 16x32, 24x48 |
+| F3 | mark the characters a face does not have, on and off |
+| F4 | clear what is shown |
+| `exit` at the prompt | closes all three panes |
 
-`send.sh --clear`, `--size`, `--marks`, `--up` and `--down` do the same from
-a script.
+Every other key goes to the shells. `sidebyside/send.sh 'a command'` types a
+line into all three from outside the tab, and `send.sh --size`, `--marks`,
+`--clear`, `--up` and `--down` press the pane keys.
 
 ## What the listings show
 
@@ -71,7 +79,7 @@ With Neuronte 2.2.0, Neuronte 0.1.4 and DejaVu 2.37:
 
 A Neuronte bundle draws a character it was not trained on anyway, with a
 net that never saw it, so it comes out as some other shape.
-`show-dejavu-only.sh` shows exactly those characters; Ctrl-U draws a plain
+`show-dejavu-only.sh` shows exactly those characters; F3 draws a plain
 mark in their place. `--against n014` or `--against both` compares DejaVu
 with the other bundle or with the two together. Combining marks and
 characters with no picture are counted and not listed.
@@ -117,6 +125,6 @@ a screen costs the same whichever face drew them: 4 to 6 ms at 8x16 and
 make test
 ```
 
-`tests/test_sidebyside.py` checks the shared text, the keys, the picture
-sent to the terminal and the listings. It needs no Neuronte tree and no
-terminal.
+`tests/test_sidebyside.py` checks what a pane makes of a shell's output, the
+keys, the picture sent to the terminal and the listings. It needs no
+Neuronte tree and no terminal.

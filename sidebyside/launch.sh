@@ -1,7 +1,7 @@
 #!/bin/sh
 # Open a Kilix tab with three panes side by side: Neuronte 2, Neuronte 0.1.4, DejaVu.
 #   launch.sh [--cell 12x24]
-# Type in any pane and the text appears in all three.
+# Each pane is a shell in this folder. Type in any pane and all three shells get it.
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/env.sh"
 if [ "$1" = "--pane" ]; then

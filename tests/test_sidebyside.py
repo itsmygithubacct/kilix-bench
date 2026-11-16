@@ -25,24 +25,35 @@ class Flat:
 class ScreenTest(unittest.TestCase):
     def test_text_wraps_and_the_cursor_follows(self):
         s = pane.Screen()
-        s.feed("abcdef\ngh")
+        s.feed("abcdef\r\ngh")
         rows, cursor = s.rows(4, 10)
         self.assertEqual(["".join(r) for r in rows], ["abcd", "ef", "gh"])
         self.assertEqual(cursor, (2, 2))
 
-    def test_backspace_clear_size_and_mark(self):
+    def test_what_a_plain_shell_sends(self):
         s = pane.Screen()
-        s.feed("ab\n" + pane.ERASE + pane.ERASE)
-        self.assertEqual(s.lines, [["a"]])
-        s.feed(pane.SIZE + pane.MARK)
-        self.assertEqual((s.size, s.marked), (2, True))
-        s.feed(pane.CLEAR)
-        self.assertEqual((s.lines, s.size, s.marked), ([[]], 2, True))
+        s.feed("$ abc\b\b\x1b[K")                      # two characters rubbed out
+        self.assertEqual("".join(s.lines[-1]), "$ a")
+        s.feed("\rxy\x1b]0;title\x07\x1b[1mz\x1b[0m")   # overwrite, a title, bold
+        self.assertEqual("".join(s.lines[-1]), "xyz")
+        s.feed("\x1b[")                                  # a sequence cut in two
+        s.feed("2Jnew")
+        self.assertEqual(["".join(l) for l in s.lines], ["new"])
 
-    def test_scrolling_stops_at_the_top_and_typing_returns(self):
+    def test_commands_change_the_view_and_not_the_text(self):
         s = pane.Screen()
-        s.feed("\n".join(str(i) for i in range(30)))
-        s.feed(pane.UP * 50)
+        s.feed("one\r\ntwo")
+        s.command(pane.SIZE)
+        s.command(pane.MARK)
+        self.assertEqual((s.size, s.marked, len(s.lines)), (2, True, 2))
+        s.command(pane.CLEAR)
+        self.assertEqual(["".join(l) for l in s.lines], ["two"])
+
+    def test_scrolling_stops_at_the_top_and_output_returns(self):
+        s = pane.Screen()
+        s.feed("\r\n".join(str(i) for i in range(30)))
+        for _ in range(50):
+            s.command(pane.UP)
         rows, cursor = s.rows(10, 10)
         self.assertEqual("".join(rows[0]), "0")
         self.assertIsNone(cursor)
@@ -50,21 +61,33 @@ class ScreenTest(unittest.TestCase):
         rows, cursor = s.rows(10, 10)
         self.assertEqual("".join(rows[-1]), "29x")
 
-    def test_two_screens_fed_the_same_bytes_agree(self):
-        a, b = pane.Screen(), pane.Screen()
-        text = "one\ttwo\n✓ é" + pane.ERASE + pane.SIZE
-        a.feed(text)
-        for ch in text:
-            b.feed(ch)
-        self.assertEqual((a.lines, a.size), (b.lines, b.size))
-
 
 class KeysTest(unittest.TestCase):
-    def test_keys_become_stream_bytes(self):
-        self.assertEqual(pane.keys(b"a\r\x08"), b"a\n\x7f")
-        self.assertEqual(pane.keys(b"\x1b[5~\x1b[6~\x1b[A"), (pane.UP + pane.DOWN).encode())
-        self.assertEqual(pane.keys("é✓".encode()), "é✓".encode())
-        self.assertIsNone(pane.keys(b"ab\x03"))
+    def test_pane_keys_become_commands_and_the_rest_passes(self):
+        self.assertEqual(pane.keys(b"ls\r\x03\x1b[A"), b"ls\r\x03\x1b[A")
+        self.assertEqual(pane.keys(b"\x1b[5~\x1b[6~\x1bOQ"), (pane.UP + pane.DOWN + pane.SIZE).encode())
+        self.assertEqual(pane.split(b"ab" + pane.MARK.encode() + "\u2713".encode()),
+                         [b"ab", pane.MARK, "\u2713".encode()])
+
+
+class ShellTest(unittest.TestCase):
+    def test_a_shell_runs_and_its_output_is_read(self):
+        import select
+        import tempfile
+        with tempfile.TemporaryDirectory() as here:
+            pid, fd = pane.shell(["sh", "-c", "printf 'in %s' \"$TERM\"; pwd"], here)
+            s, data = pane.Screen(), b""
+            while select.select([fd], [], [], 5)[0]:
+                try:
+                    piece = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not piece:
+                    break
+                data += piece
+            os.waitpid(pid, 0)
+            s.feed(data.decode())
+            self.assertEqual("".join(s.lines[0]), "in dumb" + os.path.realpath(here))
 
 
 class DrawTest(unittest.TestCase):
