@@ -51,13 +51,14 @@ def measure(which, chars, sizes, repeats):
             if which == "dejavu":
                 f.maps()
                 f._fonts(w, h)
+            one = getattr(f, "draw", f.cell)     # Neuronte: the draw call, which keeps cells
             t = time.perf_counter()
             for s in scalars:
-                f.cell(s, w, h)
+                one(s, w, h)
             first.append(time.perf_counter() - t)
             t = time.perf_counter()
             for s in scalars:
-                f.cell(s, w, h)
+                one(s, w, h)
             again.append(time.perf_counter() - t)
         cache, screen = {}, []
         rows = [[chars[(r * 80 + c) % len(chars)] for c in range(80)] for r in range(24)]

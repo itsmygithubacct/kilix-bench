@@ -54,6 +54,8 @@ class Neuronte:
                 raise Missing(f"{os.path.basename(path)} is not under {home_var}; run make there")
         lib = self.lib = ctypes.CDLL(library)
         lib.neuronte_open_file.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+        lib.neuronte_coverage.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_int,
+                                          ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
         lib.neuronte_draw_scalar.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)] + [ctypes.c_int] * 7 \
             + [ctypes.c_uint32, ctypes.c_uint32]
         self.can_mark = hasattr(lib, "neuronte_untrained")
@@ -82,11 +84,21 @@ class Neuronte:
             self.marked = bool(on)
 
     def cell(self, scalar, w, h):
-        """White on black through the draw call a terminal uses, which keeps
-        each cell in the handle after the net has drawn it once."""
+        """The net's coverage of the cell, unaltered."""
+        out = (ctypes.c_float * (w * h))()
+        if self.lib.neuronte_coverage(self.handle, scalar, w, h, 0, out) != 0:
+            return np.zeros((h, w), np.uint8)
+        a = np.frombuffer(out, np.float32).reshape(h, w)
+        return (np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8)
+
+    def draw(self, scalar, w, h):
+        """The library's own draw call, white on black, as a terminal uses it.
+        It keeps each cell in the handle after the net has drawn it once, so
+        the benchmark times it. Its pixels are not plain coverage (the call
+        blends for the eye), so the panes do not show them."""
         out = (ctypes.c_uint32 * (w * h))()
         self.lib.neuronte_draw_scalar(self.handle, out, w, w, h, 0, 0, w, h, scalar, 0xFFFFFFFF)
-        return (np.frombuffer(out, np.uint32).reshape(h, w) & 0xFF).astype(np.uint8)
+        return out
 
 
 def cmap(path):
