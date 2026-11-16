@@ -72,7 +72,7 @@ def block(scalar):
 def shown(scalar):
     """Whether a terminal cell would show a picture for it."""
     cat = unicodedata.category(chr(scalar))
-    return cat[0] not in "MC" and cat not in ("Zs", "Zl", "Zp")
+    return cat[0] != "M" and cat not in ("Cc", "Cf", "Cs", "Zs", "Zl", "Zp")
 
 
 def sets(against="v2"):
