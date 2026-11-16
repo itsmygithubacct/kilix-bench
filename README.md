@@ -29,6 +29,11 @@ of them includes Kitty's GPU font raster.
 - Stores every run as JSON and text in a user-private directory, and refuses
   to write a record that contains the checkout or home paths.
 
+[sidebyside/](sidebyside/README.md) is a separate, interactive test: three
+panes in a Kilix tab draw the same typed text with Neuronte 2, Neuronte
+0.1.4 and DejaVu, with scripts that list the characters they share and a
+three-way benchmark.
+
 ## Run
 
 ```sh
