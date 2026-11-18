@@ -94,9 +94,10 @@ def series(lines, decode, group):
         found.items(), key=lambda item: order(item[0]))}
 
 
-# Panel geometry: the plot area of panel k spans x 50..330 and y 30..230,
-# shifted right by 380 * k. Accuracy 1.0 is y = 30, 0.0 is y = 230.
-PLOT_LEFT, PLOT_RIGHT, PLOT_TOP, PLOT_BOTTOM, PANEL_STEP = 50, 330, 30, 230, 380
+# Panel geometry: the plot area of panel k spans x 50..290 and y 30..230,
+# shifted right by 380 * k, leaving room for the end labels. Accuracy 1.0 is
+# y = 30, 0.0 is y = 230.
+PLOT_LEFT, PLOT_RIGHT, PLOT_TOP, PLOT_BOTTOM, PANEL_STEP = 50, 290, 30, 230, 380
 
 
 def scale(step, accuracy, low, high, panel=0):
@@ -127,37 +128,44 @@ def chart_svg(lines, decode="constrained", group="computer-use"):
         ".grid{stroke:#e4e3de;stroke-width:1}"
         ".chance{stroke:#8f8e86;stroke-width:1;stroke-dasharray:4 3}",
     ]
-    for slot in range(len(LIGHT)):
-        out.append(f".s{slot}{{stroke:{LIGHT[slot]};fill:{LIGHT[slot]}}}")
+    # Light colours are presentation attributes on the marks, so a renderer
+    # without CSS still draws them; the dark rules below override them.
     out.append("@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}"
                ".ink{fill:#f0efec}.muted{fill:#c3c2b7}"
                ".grid{stroke:#33332f}.chance{stroke:#8f8e86}")
     for slot in range(len(DARK)):
-        out.append(f".s{slot}{{stroke:{DARK[slot]};fill:{DARK[slot]}}}")
+        out.append(f".s{slot}{{stroke:{DARK[slot]}}}.f{slot}{{fill:{DARK[slot]}}}")
     out.append("}</style>")
-    out.append('<rect class="bg" width="760" height="290"/>')
+    out.append('<rect class="bg" fill="#fcfcfb" width="760" height="290"/>')
     for panel, name in enumerate(groups):
         shift = panel * PANEL_STEP
         out.append(
-            f'<text class="ink" x="{PLOT_LEFT + shift}" y="18" '
+            f'<text class="ink" fill="#1f1f1e" x="{PLOT_LEFT + shift}" y="18" '
             f'font-weight="600">{escape(name)} accuracy ({escape(decode)}, '
             f'{escape(lines[0]["split"]) if lines else "dev"} split)</text>')
         for tick in (0.0, 0.25, 0.5, 0.75, 1.0):
             _x, y = scale(low, tick, low, high)
-            cls = "chance" if tick == 0.5 else "grid"
-            out.append(f'<line class="{cls}" x1="{PLOT_LEFT + shift}" '
+            if tick == 0.5:
+                look = ('class="chance" stroke="#8f8e86" stroke-width="1" '
+                        'stroke-dasharray="4 3"')
+            else:
+                look = 'class="grid" stroke="#e4e3de" stroke-width="1"'
+            out.append(f'<line {look} x1="{PLOT_LEFT + shift}" '
                        f'x2="{PLOT_RIGHT + shift}" y1="{y}" y2="{y}"/>')
-            out.append(f'<text class="muted" x="{PLOT_LEFT + shift - 6}" '
-                       f'y="{y + 4}" text-anchor="end">{int(tick * 100)}%'
-                       "</text>")
-        out.append(f'<text class="muted" x="{PLOT_RIGHT + shift}" '
-                   f'y="{PLOT_BOTTOM - 54}" text-anchor="end">chance 50%'
-                   "</text>")
+            out.append(f'<text class="muted" fill="#6b6a64" '
+                       f'x="{PLOT_LEFT + shift - 6}" y="{y + 4}" '
+                       f'text-anchor="end">{int(tick * 100)}%</text>')
+        _x, chance_y = scale(low, 0.5, low, high)
+        out.append(f'<text class="muted" fill="#6b6a64" '
+                   f'x="{PLOT_RIGHT + shift}" y="{chance_y + 13}" '
+                   'text-anchor="end">chance 50%</text>')
         for step in sorted({low, high}):
             x, _y = scale(step, 0, low, high, panel)
-            out.append(f'<text class="muted" x="{x}" y="{PLOT_BOTTOM + 16}" '
-                       f'text-anchor="middle">step {step}</text>')
+            out.append(f'<text class="muted" fill="#6b6a64" x="{x}" '
+                       f'y="{PLOT_BOTTOM + 16}" text-anchor="middle">'
+                       f"step {step}</text>")
         runs_of_arm = {}
+        ends = []
         for (arm, run), points in series(lines, decode, name).items():
             slot = _arm_slot(arm, arms_seen)
             runs_of_arm.setdefault(arm, []).append(run)
@@ -167,24 +175,32 @@ def chart_svg(lines, decode="constrained", group="computer-use"):
                       for step, acc in points]
             text = " ".join(f"{x},{y}" for x, y in coords)
             out.append(f'<polyline class="s{slot}" fill="none" '
-                       f'stroke-width="2"{dash} points="{text}">'
+                       f'stroke="{LIGHT[slot]}" stroke-width="2"{dash} '
+                       f'points="{text}">'
                        f"<title>{escape(arm)} {escape(run)}</title>"
                        "</polyline>")
             for (x, y), (step, acc) in zip(coords, points):
                 out.append(
-                    f'<circle class="s{slot}" cx="{x}" cy="{y}" r="4">'
-                    f"<title>{escape(arm)} {escape(run)} step {step}: "
+                    f'<circle class="f{slot} s{slot}" fill="{LIGHT[slot]}" '
+                    f'stroke="#fcfcfb" stroke-width="2" cx="{x}" cy="{y}" '
+                    f'r="5"><title>{escape(arm)} {escape(run)} step {step}: '
                     f"{100 * acc:.1f}%</title></circle>")
-            x, y = coords[-1]
-            out.append(f'<text class="ink" x="{x + 6}" y="{y + 4}">'
-                       f"{escape(arm)} {escape(run)}</text>")
+            ends.append([coords[-1][1], coords[-1][0],
+                         f"{escape(arm)} {escape(run)}"])
+        # Direct labels at the line ends, pushed apart to 13 px.
+        ends.sort()
+        for index in range(1, len(ends)):
+            ends[index][0] = max(ends[index][0], ends[index - 1][0] + 13)
+        for y, x, label in ends:
+            out.append(f'<text class="ink" fill="#1f1f1e" x="{x + 9}" '
+                       f'y="{y + 4}">{label}</text>')
     legend_x = PLOT_LEFT
     for (arm, run) in series(lines, decode, "overall"):
         slot = _arm_slot(arm, arms_seen)
-        out.append(f'<rect class="s{slot}" x="{legend_x}" y="268" width="12" '
-                   'height="3"/>')
-        out.append(f'<text class="ink" x="{legend_x + 16}" y="273">'
-                   f"{escape(arm)} {escape(run)}</text>")
+        out.append(f'<rect class="f{slot}" fill="{LIGHT[slot]}" '
+                   f'x="{legend_x}" y="266" width="14" height="4" rx="2"/>')
+        out.append(f'<text class="ink" fill="#1f1f1e" x="{legend_x + 19}" '
+                   f'y="272">{escape(arm)} {escape(run)}</text>')
         legend_x += 120
     out.append("</svg>")
     return "\n".join(out) + "\n"

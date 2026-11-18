@@ -126,20 +126,23 @@ class ProgressTest(unittest.TestCase):
             progress.progress_line(result(0.75, 1.0), "qwen", "r1", 100, "T"),
             progress.progress_line(result(0.5, 0.5), "needle", "r1", 100, "T"),
         ]
-        # x: step 0 -> 50, step 100 -> 330; y: 1.0 -> 30, 0.5 -> 130, 0 -> 230
+        # x: step 0 -> 50, step 100 -> 290; y: 1.0 -> 30, 0.5 -> 130, 0 -> 230
         self.assertEqual(progress.scale(0, 0.5, 0, 100), (50.0, 130.0))
-        self.assertEqual(progress.scale(100, 0.75, 0, 100), (330.0, 80.0))
+        self.assertEqual(progress.scale(100, 0.75, 0, 100), (290.0, 80.0))
         self.assertEqual(progress.scale(100, 1.0, 0, 100, panel=1),
-                         (710.0, 30.0))
+                         (670.0, 30.0))
         svg = progress.chart_svg(lines, decode="raw", group="computer-use")
-        self.assertIn('points="50.0,130.0 330.0,80.0"', svg)      # qwen overall
-        self.assertIn('points="430.0,180.0 710.0,30.0"', svg)     # qwen logs
-        self.assertIn('points="330.0,130.0"', svg)                # needle
+        self.assertIn('points="50.0,130.0 290.0,80.0"', svg)      # qwen overall
+        self.assertIn('points="430.0,180.0 670.0,30.0"', svg)     # qwen band
+        self.assertIn('points="290.0,130.0"', svg)                # needle
         self.assertIn("chance 50%", svg)
         self.assertIn("prefers-color-scheme: dark", svg)
         # Needle takes the first colour slot, Qwen the second, whatever order.
-        self.assertIn('class="s1" fill="none" stroke-width="2" '
-                      'points="50.0,130.0', svg)
+        self.assertIn('class="s1" fill="none" stroke="#eb6834" '
+                      'stroke-width="2" points="50.0,130.0', svg)
+        self.assertIn('class="s0" fill="none" stroke="#2a78d6"', svg)
+        # The chance label sits on the 50% line, not elsewhere.
+        self.assertIn('y="143.0" text-anchor="end">chance 50%', svg)
         table = progress.chart_table(lines, decode="raw",
                                      group="computer-use")
         self.assertIn("qwen       r1               100    75.0%"

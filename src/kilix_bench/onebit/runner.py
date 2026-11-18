@@ -175,9 +175,11 @@ def run(spec, backend=None, progress=None, env=None):
         "endpoint": spec.get("endpoint") if not spec.get("command") else None,
         "model": model,
         "settings": backend.settings(),
+        # A backend with no system prompt (Needle) names its own contract.
         "contract": {
-            "version": contract.CONTRACT_VERSION,
-            "system_prompt_sha256": contract.system_prompt_sha256(),
+            "version": model.get("contract") or contract.CONTRACT_VERSION,
+            "system_prompt_sha256": None if model.get("contract")
+            else contract.system_prompt_sha256(),
         },
         "items": {
             "split": spec.get("split", "dev"),
