@@ -39,7 +39,8 @@ class NeedleParseTest(unittest.TestCase):
                                     "\n\nDid it fail?")
         self.assertIsNone(reason)
         self.assertEqual(
-            text, "<information> / exit 1 / </information> /  / Did it fail?")
+            text, "Answer the question: <information> / exit 1 / "
+                  "</information> /  / Did it fail?")
         self.assertEqual(needle_input("a \\ b"),
                          (None, "skipped_unrepresentable"))
 
@@ -53,19 +54,21 @@ class NeedleParseTest(unittest.TestCase):
             return {"function_calls": [
                 {"name": "answer", "arguments": {"value": 1}}]}
 
-        backend = NeedleBackend("", max_bytes=80, transport=transport)
+        backend = NeedleBackend("", max_bytes=100, transport=transport)
         item = {"context": "ERROR disk full", "prompt": "Verdict on this job.",
                 "answer": 1}
         answer = backend.ask(contract.messages(item), "raw")
         self.assertEqual(answer["parsed"], 1)
         self.assertEqual(sent[0], ("/reset", b"{}"))
         self.assertEqual(sent[1][1].decode(), json.dumps(
-            {"input": "<information> / ERROR disk full / </information> /  "
-                      "/ Verdict on this job."}, separators=(",", ":")))
-        long_item = {"prompt": "x" * 81, "answer": 0}
+            {"input": "Answer the question: <information> / ERROR disk full "
+                      "/ </information> /  / Verdict on this job."},
+            separators=(",", ":")))
+        long_item = {"prompt": "x" * 80, "answer": 0}
         skipped = backend.ask(contract.messages(long_item), "raw")
         self.assertEqual(skipped["skipped"], "skipped_too_long")
-        self.assertEqual(skipped["input_bytes"], 81)
+        # 21 bytes of lead-in + 80
+        self.assertEqual(skipped["input_bytes"], 101)
         self.assertFalse(backend.supports("constrained")[0])
 
 

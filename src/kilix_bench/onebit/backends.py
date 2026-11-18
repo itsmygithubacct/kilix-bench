@@ -128,7 +128,7 @@ class ChatBackend:
 
     def supports(self, arm):
         if arm == "raw":
-            return True, ""
+            return True, "no grammar; the reply must be exactly 0 or 1"
         if arm == "constrained":
             if self.flavor == "llama-server":
                 return True, "GBNF grammar " + GRAMMAR
@@ -304,13 +304,19 @@ NEEDLE_TOOLS = [{
         "required": ["value"]},
 }]
 NEEDLE_MAX_BYTES = 400   # kilix-needle's request limit for this engine
+# Needle has no system prompt, so the contract reaches it as the answer tool's
+# description plus this fixed lead-in. Measured on the stock model with
+# made-up questions (not OneBit items): with no lead-in it called no tool for
+# 7 of 8 questions; with this one it called `answer` for 7 of 8.
+NEEDLE_LEAD = "Answer the question: "
+NEEDLE_CONTRACT_VERSION = "onebit-needle-contract/v1"
 
 
 def needle_input(item_text):
     """The single-line request Needle gets, or (None, reason)."""
     import unicodedata
     text = item_text.replace("\r\n", "\n").replace("\n", " / ")
-    text = text.replace("\t", " ").strip()
+    text = NEEDLE_LEAD + text.replace("\t", " ").strip()
     if "\\" in text:
         return None, "skipped_unrepresentable"
     if any(unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp")
@@ -387,11 +393,13 @@ class NeedleBackend:
         self._transport = transport
 
     def describe(self):
+        import hashlib
         info = {"flavor": "needle2", "model": "needle2",
-                "tools_sha256": __import__("hashlib").sha256(json.dumps(
+                "contract": NEEDLE_CONTRACT_VERSION,
+                "lead_in": NEEDLE_LEAD,
+                "tools_sha256": hashlib.sha256(json.dumps(
                     NEEDLE_TOOLS, sort_keys=True).encode()).hexdigest()}
         if self.engine_path:
-            import hashlib
             import os
             digest = hashlib.sha256()
             with open(self.engine_path, "rb") as handle:
