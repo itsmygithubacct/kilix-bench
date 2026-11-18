@@ -13,7 +13,7 @@ from unittest import mock
 
 from kilix_bench.onebit import contract, runner
 from kilix_bench.onebit.backends import (
-    ChatBackend, CommandBackend, first_token_logprobs)
+    Backend, ChatBackend, CommandBackend, chat_usage, first_token_logprobs)
 from kilix_bench.report import write_run
 
 
@@ -74,7 +74,7 @@ ITEMS = [
 ]
 
 
-class FakeBackend:
+class FakeBackend(Backend):
     """Answers from a table; the constrained arm is reported unsupported."""
 
     kind = "chat"
@@ -153,6 +153,17 @@ class RunTest(unittest.TestCase):
         text = runner.render(payload)
         self.assertIn("chance 50.0%", text)
         self.assertIn("arm constrained: unsupported", text)
+
+
+class UsageTest(unittest.TestCase):
+    def test_chat_usage_in_the_shared_shape(self):
+        self.assertEqual(
+            chat_usage({"prompt_tokens": 200, "completion_tokens": 1,
+                        "prompt_tokens_details": {"cached_tokens": 150}}),
+            {"input_tokens": 200, "cached_input_tokens": 150,
+             "output_tokens": 1, "reasoning_output_tokens": None})
+        self.assertIsNone(chat_usage(None))
+        self.assertIsNone(chat_usage({"total_tokens": 3}))
 
 
 class LogprobTest(unittest.TestCase):

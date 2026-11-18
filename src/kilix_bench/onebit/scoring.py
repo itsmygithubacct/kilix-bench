@@ -11,6 +11,8 @@ counted on their own.
 import math
 
 CHANCE = 0.5
+USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens",
+              "reasoning_output_tokens")
 GRADE_PASS = 0.80
 GRADE_BANDS = tuple(f"grade-{grade:02d}" for grade in range(1, 13))
 
@@ -130,7 +132,70 @@ def summarize(records):
         "by_form": grouped(records, lambda row: row["form"]),
         "by_polarity": grouped(records, lambda row: row["polarity"]),
         "grade": grade_level(records),
+        "cost": cost(records),
     }
+
+
+def cost(records):
+    """Tokens and time per item, for a backend that reports usage.
+
+    Total tokens are input plus output (reasoning tokens are part of the
+    output). Tokens per correct answer divide the total by the correct
+    answers, so a model that is cheap but often wrong does not look cheap.
+    Seconds per item are the mean call latency (calls may overlap).
+    None when no answered item carries usage.
+    """
+    rows = [row for row in records
+            if not row.get("skipped") and row.get("usage")]
+    if not rows:
+        return None
+    totals = {key: sum(row["usage"].get(key) or 0 for row in rows)
+              for key in USAGE_KEYS}
+    count = len(rows)
+    total = totals["input_tokens"] + totals["output_tokens"]
+    correct = sum(row["parsed"] == row["answer"] for row in rows)
+    latencies = [row["latency_ms"] for row in rows
+                 if row.get("latency_ms") is not None]
+    return {
+        "items": count,
+        "totals": totals,
+        "total_tokens": total,
+        "tokens_per_item": total / count,
+        "input_tokens_per_item": totals["input_tokens"] / count,
+        "cached_share": (totals["cached_input_tokens"] /
+                         totals["input_tokens"]
+                         if totals["input_tokens"] else None),
+        "output_tokens_per_item": totals["output_tokens"] / count,
+        "reasoning_tokens_per_item":
+            totals["reasoning_output_tokens"] / count,
+        "correct": correct,
+        "tokens_per_correct": total / correct if correct else None,
+        "seconds_per_item": (sum(latencies) / len(latencies) / 1000
+                             if latencies else None),
+        "from_cache": sum(bool(row.get("from_cache")) for row in rows),
+    }
+
+
+def cost_table(value):
+    """The cost columns as two text lines, or [] without usage."""
+    if not value:
+        return []
+
+    def number(amount, digits=0):
+        return "-" if amount is None else f"{amount:,.{digits}f}"
+
+    cached = value["cached_share"]
+    return [
+        f"{'cost':<28} {'tok/item':>9} {'in/item':>9} {'cached':>7} "
+        f"{'out/item':>8} {'reason':>7} {'tok/correct':>11} {'s/item':>7}",
+        f"{'':<28} {number(value['tokens_per_item']):>9} "
+        f"{number(value['input_tokens_per_item']):>9} "
+        f"{'-' if cached is None else f'{100 * cached:.0f}%':>7} "
+        f"{number(value['output_tokens_per_item'], 1):>8} "
+        f"{number(value['reasoning_tokens_per_item'], 1):>7} "
+        f"{number(value['tokens_per_correct']):>11} "
+        f"{number(value['seconds_per_item'], 2):>7}",
+    ]
 
 
 def sign_test(wins_a, wins_b):
@@ -223,6 +288,9 @@ def table(groups, title):
 def render_summary(summary):
     lines = table({"overall": summary["overall"]}, "")
     lines.append("")
+    if summary.get("cost"):
+        lines += cost_table(summary["cost"])
+        lines.append("")
     lines += table(summary["by_band"], "band")
     lines.append("")
     lines += table(summary["by_form"], "form")

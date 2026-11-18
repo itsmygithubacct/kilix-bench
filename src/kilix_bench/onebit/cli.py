@@ -8,6 +8,8 @@
     python3 -m kilix_bench onebit progress --arm A --run R --step N RESULT.json
     python3 -m kilix_bench onebit chart progress.jsonl [--group BAND[/DOMAIN]]
     python3 -m kilix_bench --suite onebit --backend needle [--needle-engine PATH]
+    python3 -m kilix_bench --suite onebit --backend codex \\
+        --codex-profile onebit-luna6-low [--jobs 4]
 """
 
 import argparse
@@ -19,9 +21,9 @@ import subprocess
 import sys
 
 from kilix_bench.isolate import plain_sandbox
-from kilix_bench.onebit import items as itemset, progress, scoring
+from kilix_bench.onebit import backends, items as itemset, progress, scoring
 from kilix_bench.onebit.runner import render
-from kilix_bench.report import write_run
+from kilix_bench.report import bench_home, write_run
 
 
 def run_parser():
@@ -30,45 +32,28 @@ def run_parser():
         description="Ask a model every OneBit item and score the one-digit "
                     "answers.")
     parser.add_argument(
-        "--backend", choices=("chat", "command", "needle"), default="",
-        help="chat (with --endpoint), command (with --command) or needle "
-             "(the needle2 engine binary, answering with a tool call)")
-    parser.add_argument(
-        "--needle-engine", default="",
-        help="needle2 engine binary (default: the installed Kilix asset)")
-    parser.add_argument("--needle-max-bytes", type=int, default=400,
-                        help="Longest single-line input sent to Needle")
-    target = parser.add_mutually_exclusive_group()
-    target.add_argument(
-        "--endpoint",
-        help="OpenAI-compatible server: its root URL or its "
-             "/v1/chat/completions URL (llama-server, Ollama, kilix-llm serve)")
-    target.add_argument(
-        "--command",
-        help="Program that reads an item on stdin and exits 0 or 1, such as "
-             "'kilix-llm judge --stdin'")
-    parser.add_argument("--model", default="",
-                        help="Model name sent to the server")
-    parser.add_argument(
-        "--flavor", choices=("auto", "llama-server", "ollama", "openai"),
-        default="auto", help="Server type; auto asks the server")
+        "--backend", choices=tuple(backends.REGISTRY), default="",
+        help="chat (with --endpoint, the default), command (with "
+             "--command), needle (the needle2 engine) or codex (codex exec "
+             "with --codex-profile)")
     parser.add_argument("--split", choices=("dev", "test", "all"),
                         default="dev")
     parser.add_argument("--bands", default="",
                         help="Comma-separated bands (default every band)")
     parser.add_argument("--arms", default="",
-                        help="raw,constrained (default both) for a server")
-    parser.add_argument("--max-tokens", type=int, default=4)
-    parser.add_argument("--thinking", choices=("off", "on", "default"),
-                        default="off",
-                        help="Ask the server to switch thinking off (default)")
-    parser.add_argument("--timeout", type=float, default=120.0,
-                        help="Seconds per item")
+                        help="raw,constrained (default: the backend's arms)")
+    parser.add_argument("--timeout", type=float, default=0,
+                        help="Seconds per item (default 120; codex 180)")
     parser.add_argument("--limit", type=int, default=0,
                         help="Only the first N selected items (a smoke run)")
-    parser.add_argument("--no-logprobs", action="store_true")
-    parser.add_argument("--api-key-env", default="",
-                        help="Environment variable holding an API key")
+    parser.add_argument("--jobs", type=int, default=0,
+                        help="Items asked at once (default 1; codex 4)")
+    parser.add_argument(
+        "--cache-dir", default="",
+        help="Answer cache for resuming (default: onebit-cache in the bench "
+             "home; used by backends that support it, such as codex)")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Ask every item again; keep no answers")
     parser.add_argument("--model-file", default="",
                         help="Weights file to hash into the record")
     parser.add_argument("--model-sha256", default="")
@@ -79,9 +64,8 @@ def run_parser():
     parser.add_argument(
         "--sizer-command", default="",
         help="Command that prints the sizer JSON; 'off' to skip the sizer")
-    parser.add_argument(
-        "--pass-env", action="append", default=[],
-        help="Environment variable the command backend keeps (repeatable)")
+    for module in backends.REGISTRY.values():
+        module.add_arguments(parser)
     return parser
 
 
@@ -91,38 +75,33 @@ def _slug(text):
 
 
 def default_needle_engine():
-    data = os.environ.get("KILIX_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "gpu_terminal", "kilix", "data")
-    return os.path.join(data, "desktop-apps", "assets", "needle2", "needle")
+    return backends.needle.default_engine()
 
 
 def spec_from_args(args):
-    return {
+    module = backends.module_for(args.backend)
+    spec = {
         "backend": args.backend,
-        "needle_engine": os.path.abspath(
-            args.needle_engine or default_needle_engine())
-        if args.backend == "needle" else "",
-        "needle_max_bytes": args.needle_max_bytes,
-        "endpoint": args.endpoint,
-        "command": args.command,
-        "model": args.model,
-        "flavor": args.flavor,
         "split": args.split,
         "bands": [band for band in args.bands.split(",") if band],
         "arms": [arm for arm in args.arms.split(",") if arm],
-        "max_tokens": args.max_tokens,
-        "thinking": args.thinking,
-        "timeout": args.timeout,
         "limit": args.limit,
-        "no_logprobs": args.no_logprobs,
-        "api_key_env": args.api_key_env,
+        "jobs": args.jobs,
         "model_file": os.path.abspath(args.model_file) if args.model_file
         else "",
         "model_sha256": args.model_sha256,
         "model_label": args.label,
         "max_input_tokens": args.max_input_tokens,
         "sizer_command": args.sizer_command,
+        "cache_dir": "" if args.no_cache else os.path.abspath(
+            args.cache_dir or str(bench_home() / "onebit-cache")),
     }
+    if args.timeout:
+        spec["timeout"] = args.timeout
+    elif args.backend != "codex":
+        spec["timeout"] = 120.0
+    spec.update(module.spec(args))
+    return spec
 
 
 def run_command(argv):
@@ -130,13 +109,14 @@ def run_command(argv):
     args = parser.parse_args(argv)
     if not args.backend:
         args.backend = "command" if args.command else "chat"
-    if args.backend == "chat" and not args.endpoint:
-        parser.error("the chat backend needs --endpoint")
-    if args.backend == "command" and not args.command:
-        parser.error("the command backend needs --command")
-    if args.backend == "needle" and (args.endpoint or args.command):
-        parser.error("the needle backend takes neither --endpoint nor "
-                     "--command")
+    if args.backend != "chat" and args.endpoint:
+        parser.error(f"--endpoint is for the chat backend, not "
+                     f"{args.backend}")
+    if args.backend != "command" and args.command:
+        parser.error(f"--command is for the command backend, not "
+                     f"{args.backend}")
+    module = backends.module_for(args.backend)
+    module.check(args, parser)
     for band in filter(None, args.bands.split(",")):
         if band not in itemset.BANDS:
             raise SystemExit(f"unknown band {band}")
@@ -158,16 +138,16 @@ def run_command(argv):
     finally:
         shutil.rmtree(root, ignore_errors=True)
     if result.returncode != 0:
+        # A stopped run (exit 3) printed why on stderr; nothing is written.
         raise SystemExit(result.returncode or 1)
     payload = json.loads(result.stdout)
-    forbidden = [os.path.expanduser("~"), src, os.getcwd()]
+    forbidden = [os.path.expanduser("~"), src, os.getcwd(),
+                 *module.forbidden(spec)]
+    if spec["cache_dir"]:
+        forbidden.append(spec["cache_dir"])
     if args.model_file:
         forbidden.append(os.path.dirname(os.path.abspath(args.model_file)))
-    if spec["needle_engine"]:
-        forbidden.append(os.path.dirname(spec["needle_engine"]))
-    name = args.label or args.model or (
-        "needle2" if args.backend == "needle" else "") or (
-        args.command.split()[0].rsplit("/", 1)[-1] if args.command else "")
+    name = args.label or module.label(args) or args.backend
     slug = f"onebit-{_slug(name)}-{args.split}"
     stamped, _latest, text = write_run(
         payload, forbidden=tuple(forbidden), slug=slug, render=render)

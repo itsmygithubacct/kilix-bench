@@ -31,6 +31,12 @@ def messages(item):
     ]
 
 
+def flat_prompt(chat):
+    """The chat as one text, for a backend that takes a single prompt: the
+    system prompt, a blank line, then the user message."""
+    return "\n\n".join(message["content"] for message in chat)
+
+
 def item_sha256(item):
     """Identity of what was asked and the key, so two runs can be paired."""
     blob = "\0".join((

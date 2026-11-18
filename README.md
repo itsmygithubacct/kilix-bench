@@ -132,6 +132,7 @@ answered literally: "Did the build fail?" is `0` when it failed.
 PYTHONPATH=src python3 -m kilix_bench --suite onebit --endpoint http://127.0.0.1:8080 --model NAME
 PYTHONPATH=src python3 -m kilix_bench --suite onebit --command "kilix-llm judge --stdin"
 PYTHONPATH=src python3 -m kilix_bench --suite onebit --backend needle
+PYTHONPATH=src python3 -m kilix_bench --suite onebit --backend codex --codex-profile NAME
 PYTHONPATH=src python3 -m kilix_bench onebit compare A.json B.json
 PYTHONPATH=src python3 -m kilix_bench onebit progress --arm qwen --run r1 --step 400 RESULT.json
 PYTHONPATH=src python3 -m kilix_bench onebit chart progress.jsonl
@@ -146,10 +147,15 @@ PYTHONPATH=src python3 -m kilix_bench onebit chart progress.jsonl
 - A quarter of the items are `dev`. The rest are a held-out `test` split that
   no tuning may train on, and every item file carries a canary string.
 - Two arms per model: raw (the reply must be exactly `0` or `1`) and
-  constrained (a `0|1` grammar where the server takes one). Accuracy, balanced
+  constrained (a `0|1` grammar where the server takes one, or a JSON schema
+  for Codex). Accuracy, balanced
   accuracy, MCC, format failures, the share of `0` answers, and a grade level
   are reported beside the 50% chance baseline. `compare` pairs two runs with a
-  sign test.
+  sign test. A backend that reports token usage also gets cost columns
+  (tokens per item, tokens per correct answer, seconds per item).
+- Backends are one module each (chat, command, needle, codex). A Codex run
+  asks several items at a time, caches each answer, and stops cleanly on a
+  usage limit or network error. Running it again resumes it.
 - Results go to the same private results directory, as
   `onebit-<model>-<split>-*`.
 

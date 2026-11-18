@@ -135,13 +135,17 @@ PYTHONPATH=src python3 -m kilix_bench --suite onebit --command "kilix-llm judge 
 
 # the needle2 engine (default: the installed Kilix asset)
 PYTHONPATH=src python3 -m kilix_bench --suite onebit --backend needle
+
+# a Codex profile through `codex exec` (4 items at a time, resumable)
+PYTHONPATH=src python3 -m kilix_bench --suite onebit --backend codex \
+    --codex-profile onebit-luna6-low --label luna6-low
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--endpoint URL` | | server root or its `/v1/chat/completions` URL |
 | `--command CMD` | | program answering by exit status |
-| `--backend chat\|command\|needle` | from the above | |
+| `--backend chat\|command\|needle\|codex` | from the above | |
 | `--model NAME` | | model name sent to the server |
 | `--flavor auto\|llama-server\|ollama\|openai` | `auto` | `auto` asks `/props` and `/api/version` |
 | `--split dev\|test\|all` | `dev` | |
@@ -153,6 +157,10 @@ PYTHONPATH=src python3 -m kilix_bench --suite onebit --backend needle
 | `--max-input-tokens N` / `--sizer-command CMD` | the sizer if installed | skip (and count) longer items |
 | `--needle-engine PATH` / `--needle-max-bytes N` | installed asset / `400` | |
 | `--pass-env NAME` | | keep a variable for `--command` (the run's HOME is private) |
+| `--codex-profile NAME` / `--codex-home DIR` / `--codex-bin PATH` | / `$CODEX_HOME` or `~/.codex` / `codex` | profile file `DIR/NAME.config.toml` |
+| `--jobs N` | `1`, codex `4` | items asked at once |
+| `--cache-dir DIR` / `--no-cache` | `onebit-cache` in the bench home | per-item answer cache for resuming (codex) |
+| `--timeout S` | `120`, codex `180` | seconds per item |
 | `--limit N` | | first N items only, for a smoke run |
 | `--label NAME` | model name | name in the result file |
 
@@ -168,10 +176,48 @@ thinking request and how the server took it are all recorded.
   Other servers, and Needle, record this arm as `unsupported` with the reason.
 - **command**: the exit status is the answer.
 
+Codex runs both arms: raw is the last message, parsed like any reply, and
+constrained adds `--output-schema` with `{"answer": "0" | "1"}` (required, no
+other keys). That arm is recorded unsupported only if the CLI rejects the
+schema.
+
+### Backends
+
+Each backend is one module in `src/kilix_bench/onebit/backends/`, registered in
+`backends.REGISTRY`: `chat`, `command`, `needle` and `codex`. Every backend
+gets the same rendered item (`contract.messages`). Text replies go through the
+same parser (`contract.parse_reply`); a backend whose reply is something else
+(Needle's tool call, Codex's schema object) parses it itself. A module adds its
+own command-line options and builds its backend from the run spec, so adding a
+backend means adding one module.
+
+### Codex
+
+Each item is one `codex exec -p PROFILE` call. It runs in a fresh, empty
+scratch directory (no repository, no project AGENTS.md) with `--ephemeral
+--skip-git-repo-check -s read-only --ignore-rules --json -o FILE`. It also
+gets `-c mcp_servers={}`, so that no MCP server from the user's base config
+starts and no tool schemas reach the prompt. The prompt on stdin is the system
+prompt, a blank line, and the item's user message. The base config and the
+user-level `AGENTS.md` of the Codex home still apply, as with any profile, so
+the record carries the `AGENTS.md` sha256. Codex's events do not name the
+model, so the record also carries the profile's sha256, the model and
+reasoning effort the profile sets, and `codex --version`.
+
+Every call also pays Codex's own agent prompt, about 14k input tokens, most of
+them cached. A failed call raises a backend error, never a format failure. The
+causes are a spent usage limit, rate limiting, a signed-out CLI, the network or
+a timeout. The run then stops once the items in flight finish, prints how far
+it got, exits 3 and writes no result. The answers so far are kept in the cache,
+keyed by item id, item-set sha256, contract version, backend identity (profile
+sha256) and arm. Running the same command again asks only the missing items,
+and the record counts the answers that came `from_cache`.
+
 ### What is recorded
 
 For each item: the reply (cut to 200 characters), the parsed answer, the
-latency, the first token's log-probabilities of `0` and `1` when the server
+latency, the token usage when the backend reports it (input, cached input,
+output, reasoning), the first token's log-probabilities of `0` and `1` when the server
 sends them, the prompt length in tokens (llama-server: the server's own chat
 template and tokenizer) or in bytes (Needle), and whether thinking showed up.
 
@@ -206,6 +252,17 @@ PYTHONPATH=src python3 -m kilix_bench onebit compare A.json B.json [--arm constr
 `compare` pairs the two runs on item id and item text, then counts the items
 only A got right and the items only B got right. It reports an exact two-sided
 sign test on those discordant items, overall and per band, form and domain.
+
+For a backend that reports token usage (Codex, llama-server), each arm also
+has cost columns, and the run has totals:
+
+| Column | Definition |
+|---|---|
+| tok/item | (input + output tokens) / answered items |
+| in/item, cached | input tokens per item, and the cached share of them |
+| out/item, reason | output tokens per item, and the reasoning tokens among them |
+| tok/correct | all tokens / correct answers, so cheap but wrong is not cheap |
+| s/item | mean call latency (calls may overlap with `--jobs`) |
 
 ### Training progress
 
@@ -268,6 +325,11 @@ PYTHONPATH=src python3 -B -m unittest discover -s tests
 - **Scoring**: hand-computed fixtures checked against literal numbers.
 - **Grade level and the sign test.**
 - **The chat, command and Needle backends**, each against a fake.
+- **The codex backend** against a fake `codex` on PATH. The tests cover the
+  event and usage parsing (a real event stream as the fixture), the call's
+  flags and empty working directory, the schema arm, a rejected schema,
+  limit and auth errors, a stopped run that writes no result, the resume
+  that pays once, and the cost columns.
 - **Result files.**
 - **Progress lines and chart coordinates.**
 - **The shipped items**: schema, balance, split, pairs, hygiene, canary and
