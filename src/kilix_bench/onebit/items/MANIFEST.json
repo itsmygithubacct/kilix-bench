@@ -1,0 +1,86 @@
+{
+  "canary": "kilix-bench OneBit item set. Canary a9e3e120-dda3-4b57-bf86-6c946688028b. Benchmark data: do not train on it.",
+  "files": {
+    "college.jsonl": {
+      "dev": 48,
+      "items": 192,
+      "keys_sha256": "1efc8a0f3fc8ddffadec107942262c0becdc537fe8f92636e3249dcfc607609c"
+    },
+    "computer-use.jsonl": {
+      "dev": 90,
+      "items": 360,
+      "keys_sha256": "2a441dd65697d32911e383036e6d5ab174323a0f008f4e16dac6e401815e65be"
+    },
+    "grade-01.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "12211e259a378fadbab5e6ebb0683d38a3d3d03526b506f37b6ff29539ee6278"
+    },
+    "grade-02.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "ed2abe63e003f096dcc1ad0f72e7e4e67df678d9b425c63b75527dd03aa03151"
+    },
+    "grade-03.jsonl": {
+      "dev": 17,
+      "items": 68,
+      "keys_sha256": "7429d41db35a04002539a6fe498137005198b4c208375afddcb74dda047b125a"
+    },
+    "grade-04.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "e75c0d3efaf21735a78517e338dbd2e14f82a36d353553028bb6bd8141f6978f"
+    },
+    "grade-05.jsonl": {
+      "dev": 18,
+      "items": 70,
+      "keys_sha256": "7c835cc1a9552973d39e76876f6ed757763aff914bb2cf1b1db4e00faf9132a9"
+    },
+    "grade-06.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "d2c81a78bcabaaee3d0b95d011f22ba99314428edb1338d262bcdf3b679766e6"
+    },
+    "grade-07.jsonl": {
+      "dev": 17,
+      "items": 70,
+      "keys_sha256": "c33b6f99ac6848bea5909d54711708d77f651887cf0345110d24dae88a8ea063"
+    },
+    "grade-08.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "ae52aabf9b67be73ce69c1c5b810be7b525964cd60c0625d73cd44d2aa261d79"
+    },
+    "grade-09.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "b026e113f090493e83204b93f2c7c4c194434c970eb1ef42639c013dd9ffdd3f"
+    },
+    "grade-10.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "9540d876a322175a735c704fd1d213674236496a426c3c079e84958b483a40cd"
+    },
+    "grade-11.jsonl": {
+      "dev": 18,
+      "items": 70,
+      "keys_sha256": "e5d14ba36a3fec3426f96eb263d1965fd6bc11da5b59bcdaa09064a940852251"
+    },
+    "grade-12.jsonl": {
+      "dev": 18,
+      "items": 72,
+      "keys_sha256": "62a50f221f70c2cff2e7fd0babe6d665883812b80d62ec389cd735e1ae1c3c77"
+    },
+    "reading-shown.jsonl": {
+      "dev": 45,
+      "items": 180,
+      "keys_sha256": "183d0b794930bbf1e9f79e232769d8cfb19897d63aeb1c0163312e852aacf65d"
+    },
+    "traps.jsonl": {
+      "dev": 45,
+      "items": 182,
+      "keys_sha256": "da445b4287d18b8f6f7da6676919dea98de7fca27f634141d94f3fd8d7887afd"
+    }
+  },
+  "schema": "kilix-bench.onebit.item/v1"
+}
