@@ -59,6 +59,24 @@ class ShippedItemsTest(unittest.TestCase):
         for row in pairs:
             self.assertEqual(row["split"], by_id[row["pair"]]["split"])
 
+    def test_context_length_does_not_predict_the_key(self):
+        # Per computer-use domain, mean context length of key-0 and key-1
+        # items differs by under 15%.
+        self.assertEqual(items.length_cue_problems(load_all()), [])
+
+    def test_length_cue_check_fires(self):
+        rows = [{"band": "computer-use", "domain": "logs", "answer": 0,
+                 "context": "x" * 100},
+                {"band": "computer-use", "domain": "logs", "answer": 1,
+                 "context": "x" * 114},
+                {"band": "computer-use", "domain": "safety", "answer": 0,
+                 "context": "x" * 100},
+                {"band": "computer-use", "domain": "safety", "answer": 1,
+                 "context": "x" * 115}]
+        (problem,) = items.length_cue_problems(rows)
+        self.assertIn("computer-use/safety", problem)
+        self.assertIn("15% apart", problem)
+
     def test_literal_question_items_are_tagged(self):
         rows = [row for row in load_all()
                 if row["band"] == "traps" and row["domain"] ==

@@ -319,6 +319,39 @@ def balance_problems(items):
         if zeros != ones]
 
 
+LENGTH_CUE_BANDS = ("computer-use",)
+LENGTH_CUE_TOLERANCE = 0.15
+
+
+def length_cue_problems(items, bands=LENGTH_CUE_BANDS,
+                        tolerance=LENGTH_CUE_TOLERANCE):
+    """Shown-information length must not predict the key.
+
+    In each domain of the given bands, the mean context length (characters)
+    of key-0 items and of key-1 items may differ by less than ``tolerance``
+    of the smaller mean.
+    """
+    lengths = {}
+    for row in items:
+        if row["band"] in bands:
+            lengths.setdefault((row["band"], row["domain"]), ([], []))[
+                row["answer"]].append(len(row.get("context") or ""))
+    problems = []
+    for (band, domain), (zeros, ones) in sorted(lengths.items()):
+        if not zeros or not ones:
+            continue
+        mean_0, mean_1 = sum(zeros) / len(zeros), sum(ones) / len(ones)
+        smaller = min(mean_0, mean_1)
+        gap = abs(mean_0 - mean_1) / smaller if smaller else (
+            0.0 if mean_0 == mean_1 else float("inf"))
+        if gap >= tolerance:
+            problems.append(
+                f"{band}/{domain}: mean context {mean_0:.0f} chars for key 0, "
+                f"{mean_1:.0f} for key 1 ({100 * gap:.0f}% apart, limit "
+                f"{100 * tolerance:.0f}%)")
+    return problems
+
+
 def coverage_problems(items):
     """Every band reaches its minimum and has every one of its domains."""
     problems = []
@@ -414,6 +447,7 @@ def check_files(paths, full_set=False, draft=False):
         if full_set:
             problems += coverage_problems(items)
             problems += split_problems(items)
+            problems += length_cue_problems(items)
     return problems
 
 
