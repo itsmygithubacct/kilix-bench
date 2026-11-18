@@ -2,7 +2,8 @@
 
 Offscreen frame-path measurements for Kilix: how long a Kilix 95 desk takes to
 redraw, how many bytes the graphics SDK would send for a change, and how a
-full grid of text compares as Kitty cells, Kitty graphics, and Neuronte.
+full grid of text compares as Kitty cells, Kitty graphics, and Neuronte. Also
+OneBit, a yes/no test of how well a model answers with a single `0` or `1`.
 
 Not shipped: a development tool run from a checkout. No Plebian-OS release,
 Kilix or catalog tree references it.
@@ -28,6 +29,11 @@ of them includes Kitty's GPU font raster.
   presenter rectangles and wire bytes where they apply.
 - Stores every run as JSON and text in a user-private directory, and refuses
   to write a record that contains the checkout or home paths.
+
+The OneBit suite is a different kind of test: it asks a model 1,768 yes/no
+and pass/fail items it may answer only with `0` or `1`, from grade 1 to
+college, computer use, reading shown information, and traps. See
+[OneBit](#onebit) below.
 
 [sidebyside/](sidebyside/README.md) is a separate, interactive test: three
 shell panes in a Kilix tab, typed into together, drawn with Neuronte 2,
@@ -70,7 +76,7 @@ directory: the parent stops before starting either suite when it is missing.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--suite desktop\|render\|text` | `desktop` | What to measure |
+| `--suite desktop\|render\|text\|onebit` | `desktop` | What to measure (`onebit` takes its own options, below) |
 | `--desktop PATH` | none | Kilix 95 checkout (desktop suite; must contain `main.py`) |
 | `--kilix-home PATH` | `KILIX_HOME`, else `~/.local/gpu_terminal/sources/kilix` | Kilix checkout with `config/kilix_sdk` |
 | `--width N` / `--height N` | `1920` / `1080` | Frame size |
@@ -115,6 +121,41 @@ else. The JSON record has the desktop version and revision, the Python version,
 and the machine type. It does not record local paths. The text suite uses the
 `kilix-text` name.
 
+## OneBit
+
+How much intelligence fits in a one-bit answer. Every item is a yes/no
+question (`0` = yes, `1` = no) or a judgement of shown information (`0` =
+pass / ok / correct, `1` = fail / error). A question about a bad outcome is
+answered literally: "Did the build fail?" is `0` when it failed.
+
+```sh
+PYTHONPATH=src python3 -m kilix_bench --suite onebit --endpoint http://127.0.0.1:8080 --model NAME
+PYTHONPATH=src python3 -m kilix_bench --suite onebit --command "kilix-llm judge --stdin"
+PYTHONPATH=src python3 -m kilix_bench --suite onebit --backend needle
+PYTHONPATH=src python3 -m kilix_bench onebit compare A.json B.json
+PYTHONPATH=src python3 -m kilix_bench onebit progress --arm qwen --run r1 --step 400 RESULT.json
+PYTHONPATH=src python3 -m kilix_bench onebit chart progress.jsonl
+```
+
+- 1,768 original items in 16 bands: grades 1 to 12, college, computer use
+  (command output, logs, diffs, permissions, configs, safety), reading
+  information that contradicts common knowledge, and traps (negations,
+  conflict wording, instructions planted in the shown text, false premises).
+  Half the keys in every band and domain are `0`. Every key was answered again
+  by a separate blind check.
+- A quarter of the items are `dev`. The rest are a held-out `test` split that
+  no tuning may train on, and every item file carries a canary string.
+- Two arms per model: raw (the reply must be exactly `0` or `1`) and
+  constrained (a `0|1` grammar where the server takes one). Accuracy, balanced
+  accuracy, MCC, format failures, the share of `0` answers, and a grade level
+  are reported beside the 50% chance baseline. `compare` pairs two runs with a
+  sign test.
+- Results go to the same private results directory, as
+  `onebit-<model>-<split>-*`.
+
+The contract, item format, split rules, scoring and backends are in
+[docs/onebit.md](docs/onebit.md).
+
 ## Tests
 
 ```sh
@@ -126,6 +167,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 | Document | Contents |
 |---|---|
 | [docs/scenarios.md](docs/scenarios.md) | Every desktop, render, and text scenario, and how damage, scroll and inline bytes are counted |
+| [docs/onebit.md](docs/onebit.md) | The OneBit yes/no suite: contract, items, held-out split, backends, scores |
 
 ## Related repositories
 
