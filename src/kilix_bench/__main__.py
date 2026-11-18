@@ -14,9 +14,12 @@ from kilix_bench.report import render_text, write_run
 def _parser():
     parser = argparse.ArgumentParser(prog="kilix-bench")
     parser.add_argument(
-        "--suite", choices=("desktop", "render", "text"), default="desktop",
+        "--suite", choices=("desktop", "render", "text", "onebit"),
+        default="desktop",
         help="desktop measures a Kilix 95 desk; render measures the graphics SDK; "
-             "text compares Kitty cells, Kitty graphics, and Neuronte")
+             "text compares Kitty cells, Kitty graphics, and Neuronte; "
+             "onebit asks a model yes/no items it answers with 0 or 1 "
+             "(see --suite onebit --help)")
     parser.add_argument("--desktop", default="",
                         help="Path of a Kilix 95 checkout (desktop suite)")
     parser.add_argument("--kilix-home", default="",
@@ -49,8 +52,27 @@ def _run(command, env, root):
     return json.loads(result.stdout)
 
 
+def _onebit(argv):
+    """The OneBit suite has its own options; hand it everything else."""
+    for index, arg in enumerate(argv):
+        if arg == "--suite" and index + 1 < len(argv) and (
+                argv[index + 1] == "onebit"):
+            return argv[:index] + argv[index + 2:]
+        if arg == "--suite=onebit":
+            return argv[:index] + argv[index + 1:]
+    return None
+
+
 def main(argv=None):
-    args = _parse() if argv is None else _parse_argv(argv)
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "onebit":
+        from kilix_bench.onebit.cli import main as onebit_main
+        return onebit_main(argv[1:])
+    rest = _onebit(argv)
+    if rest is not None:
+        from kilix_bench.onebit.cli import run_command
+        return run_command(rest)
+    args = _parse_argv(argv)
     kilix_home = args.kilix_home or kilix_home_from_env()
     if not kilix_home or not os.path.isdir(os.path.join(kilix_home, "config")):
         raise SystemExit("pass --kilix-home pointing at a Kilix checkout")

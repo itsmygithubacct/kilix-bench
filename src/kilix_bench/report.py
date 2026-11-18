@@ -140,7 +140,7 @@ def render_text(payload):
     return "\n".join(lines) + "\n"
 
 
-def write_run(payload, forbidden=(), slug=None):
+def write_run(payload, forbidden=(), slug=None, render=None):
     assert_no_local_paths(payload, forbidden)
     directory = results_dir()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -149,7 +149,7 @@ def write_run(payload, forbidden=(), slug=None):
     latest = directory / f"{name}-latest.json"
     text = directory / f"{name}-latest.txt"
     body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    rendered = render_text(payload)
+    rendered = (render or render_text)(payload)
     _replace(stamped, body)
     _replace(latest, body)
     _replace(text, rendered)

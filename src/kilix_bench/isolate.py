@@ -68,6 +68,30 @@ def sandbox(kilix_home):
     return env, root
 
 
+def plain_sandbox():
+    """Environment for a run that needs no Kilix checkout (the OneBit suite).
+
+    Same stripping as sandbox(): no GPU_TERMINAL_*, KILIX*, KITTY_* variables,
+    a fresh private HOME and XDG tree. The caller deletes the directory.
+    """
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(_STRIP)
+    }
+    root = tempfile.mkdtemp(prefix="kilix-bench-")
+    home = os.path.join(root, "home")
+    os.makedirs(home, mode=0o700)
+    env.update({
+        "HOME": home,
+        "XDG_CONFIG_HOME": os.path.join(root, "xdg", "config"),
+        "XDG_STATE_HOME": os.path.join(root, "xdg", "state"),
+        "XDG_CACHE_HOME": os.path.join(root, "xdg", "cache"),
+        "XDG_DATA_HOME": os.path.join(root, "xdg", "data"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    return env, root
+
+
 def kilix_home_from_env():
     env = os.environ.get("KILIX_HOME")
     if env:

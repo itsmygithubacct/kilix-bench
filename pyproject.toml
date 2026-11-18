@@ -16,3 +16,11 @@ kilix-bench = "kilix_bench.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"kilix_bench.onebit" = [
+    "system-prompt-v1.txt",
+    "items/*.jsonl",
+    "items/CANARY",
+    "items/MANIFEST.json",
+]
