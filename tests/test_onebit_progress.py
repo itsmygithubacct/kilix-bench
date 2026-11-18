@@ -143,6 +143,14 @@ class ProgressTest(unittest.TestCase):
         self.assertIn('class="s0" fill="none" stroke="#2a78d6"', svg)
         # The chance label sits on the 50% line, not elsewhere.
         self.assertIn('y="143.0" text-anchor="end">chance 50%', svg)
+        # A second run of one arm: same colour, hollow marker, dashed key.
+        second = progress.chart_svg(lines + [progress.progress_line(
+            result(0.25, 0.25), "qwen", "r2", 100, "T")], decode="raw")
+        self.assertIn('<circle class="bg s1" fill="#fcfcfb" stroke="#eb6834" '
+                      'stroke-width="2" cx="290.0" cy="180.0"', second)
+        self.assertIn('stroke="#eb6834" stroke-width="2" '
+                      'stroke-dasharray="4 2" x1="288"', second)
+        self.assertEqual(svg.count('class="bg s'), 0)
         table = progress.chart_table(lines, decode="raw",
                                      group="computer-use")
         self.assertIn("qwen       r1               100    75.0%"

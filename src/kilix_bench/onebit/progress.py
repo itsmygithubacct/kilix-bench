@@ -113,6 +113,17 @@ def _arm_slot(arm, arms_seen):
     return (len(ARM_ORDER) + arms_seen.index(arm)) % len(LIGHT)
 
 
+def _marker(slot, filled):
+    """A point's look: the first run of an arm is filled (with a surface
+    ring); later runs of the same arm are hollow, so they stay apart even as
+    single points, where the dashed line does not show."""
+    if filled:
+        return (f'class="f{slot} s{slot}" fill="{LIGHT[slot]}" '
+                'stroke="#fcfcfb" stroke-width="2"')
+    return (f'class="bg s{slot}" fill="#fcfcfb" stroke="{LIGHT[slot]}" '
+            'stroke-width="2"')
+
+
 def chart_svg(lines, decode="constrained", group="computer-use"):
     groups = ["overall", group]
     steps = [line["step"] for line in lines]
@@ -181,8 +192,7 @@ def chart_svg(lines, decode="constrained", group="computer-use"):
                        "</polyline>")
             for (x, y), (step, acc) in zip(coords, points):
                 out.append(
-                    f'<circle class="f{slot} s{slot}" fill="{LIGHT[slot]}" '
-                    f'stroke="#fcfcfb" stroke-width="2" cx="{x}" cy="{y}" '
+                    f'<circle {_marker(slot, not dash)} cx="{x}" cy="{y}" '
                     f'r="5"><title>{escape(arm)} {escape(run)} step {step}: '
                     f"{100 * acc:.1f}%</title></circle>")
             ends.append([coords[-1][1], coords[-1][0],
@@ -195,10 +205,17 @@ def chart_svg(lines, decode="constrained", group="computer-use"):
             out.append(f'<text class="ink" fill="#1f1f1e" x="{x + 9}" '
                        f'y="{y + 4}">{label}</text>')
     legend_x = PLOT_LEFT
+    legend_runs = {}
     for (arm, run) in series(lines, decode, "overall"):
         slot = _arm_slot(arm, arms_seen)
-        out.append(f'<rect class="f{slot}" fill="{LIGHT[slot]}" '
-                   f'x="{legend_x}" y="266" width="14" height="4" rx="2"/>')
+        legend_runs.setdefault(arm, []).append(run)
+        first = len(legend_runs[arm]) == 1
+        dash = "" if first else ' stroke-dasharray="4 2"'
+        out.append(f'<line class="s{slot}" stroke="{LIGHT[slot]}" '
+                   f'stroke-width="2"{dash} x1="{legend_x - 2}" '
+                   f'x2="{legend_x + 16}" y1="268" y2="268"/>')
+        out.append(f'<circle {_marker(slot, first)} cx="{legend_x + 7}" '
+                   'cy="268" r="4"/>')
         out.append(f'<text class="ink" fill="#1f1f1e" x="{legend_x + 19}" '
                    f'y="272">{escape(arm)} {escape(run)}</text>')
         legend_x += 120

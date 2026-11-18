@@ -220,7 +220,9 @@ PYTHONPATH=src python3 -m kilix_bench onebit chart progress.jsonl --decode const
 tuned), the run, the step, and every decode's scores, by band and by
 band/domain. `chart` writes an SVG of accuracy against step, with one line per
 arm and run, for the whole split and for the chosen group, beside the chance
-line. It prints the same numbers as a table.
+line. Each arm keeps one colour; its first run is drawn solid with filled
+points, and later runs of the same arm dashed with hollow points. It prints
+the same numbers as a table.
 
 ## Input limits
 
