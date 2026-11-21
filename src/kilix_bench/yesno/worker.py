@@ -29,6 +29,7 @@ from kilix_bench.yesno.records import compare_files, model_id, ranking_events, r
 
 INSTRUCTION = "Respond with only YES or NO."
 HOSTED = ("codex", "grok", "claude")
+HOSTED_TIMEOUTS = (180, 360)
 PROVIDERS = ("ollama", "llama.cpp", *HOSTED, "kilix")
 
 
@@ -138,7 +139,7 @@ def llama_server(model, scratch, status):
             stop_child(server)
 
 
-def hosted_answer(provider, model, question, scratch, identify=None, effort=None):
+def hosted_answer(provider, model, question, scratch, identify=None, effort=None, *, timeout=HOSTED_TIMEOUTS[0]):
     binary = executable(provider)
     model_args = ["--model", model] if model else []
     if effort and effort != "default":
@@ -155,36 +156,38 @@ def hosted_answer(provider, model, question, scratch, identify=None, effort=None
                 "-c", "web_search=\"disabled\"", *model_args, "-o", str(last), "-"]
         prompt = INSTRUCTION + "\n\n" + question
     elif provider == "grok":
-        args = ["--single", question, "--system-prompt-override", INSTRUCTION, "--tools", "",
-                "--disable-web-search", "--no-subagents", "--max-turns", "1",
+        # An empty Grok allowlist restores its defaults. A named allowlist keeps
+        # just that tool and the two MCP tools, all of which the denylist removes.
+        args = ["--single", question, "--system-prompt-override", INSTRUCTION, "--tools", "read_file",
+                "--disallowed-tools", "read_file,search_tool,use_tool", "--disable-web-search", "--no-subagents",
                 "--output-format", "plain", *model_args]
         prompt = ""
     else:
         args = ["--print", "--system-prompt", INSTRUCTION, "--tools", "", "--strict-mcp-config",
                 "--no-session-persistence", "--output-format", "json", *model_args]
-    process = subprocess.Popen([binary, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True, errors="replace",
-                               cwd=scratch, start_new_session=True)
-    try:
-        stdout, stderr = process.communicate(prompt, timeout=180)
-        if process.returncode:
-            detail = (stderr.strip() or stdout.strip()).splitlines()
-            raise RuntimeError(f"{provider} exited {process.returncode}. " + (detail[-1][:300] if detail else ""))
-        if provider == "claude":
-            try:
-                result = json.loads(stdout)
-            except ValueError:
-                result = None
-            if isinstance(result, dict) and "result" in result:
-                if result.get("is_error"):
-                    raise RuntimeError(str(result["result"])[:300])
-                used = result.get("modelUsage") or {}
-                if identify and isinstance(used, dict) and len(used) == 1:
-                    identify(next(iter(used)))
-                return result["result"]
-        return last.read_text() if provider == "codex" else stdout
-    finally:
-        stop_child(process)
+    with subprocess.Popen([binary, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, errors="replace",
+                          cwd=scratch, start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(prompt, timeout=timeout)
+        finally:
+            stop_child(process)
+    if process.returncode:
+        detail = (stderr.strip() or stdout.strip()).splitlines()
+        raise RuntimeError(f"{provider} exited {process.returncode}. " + (detail[-1][:300] if detail else ""))
+    if provider == "claude":
+        try:
+            result = json.loads(stdout)
+        except ValueError:
+            result = None
+        if isinstance(result, dict) and "result" in result:
+            if result.get("is_error"):
+                raise RuntimeError(str(result["result"])[:300])
+            used = result.get("modelUsage") or {}
+            if identify and isinstance(used, dict) and len(used) == 1:
+                identify(next(iter(used)))
+            return result["result"]
+    return last.read_text() if provider == "codex" else stdout
 
 
 def onebit():
@@ -258,7 +261,19 @@ def answerer(provider, model, scratch, chat_backend, status, identify=None, effo
                 identify(name)
             if not model:
                 model = name
-        yield lambda question, **_: hosted_answer(provider, model, question, scratch, resolved, effort)
+        def ask_hosted(question, **_):
+            for attempt, timeout in enumerate(HOSTED_TIMEOUTS):
+                if attempt:
+                    status(f"{provider} timed out after {HOSTED_TIMEOUTS[attempt-1]:g} seconds. "
+                           f"Retrying this question with a {timeout:g}-second timeout.")
+                try:
+                    return hosted_answer(provider, model, question, scratch, resolved, effort, timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    continue
+            limits = ", ".join(f"{limit:g}s" for limit in HOSTED_TIMEOUTS)
+            raise RuntimeError(f"{provider} returned no answer after {len(HOSTED_TIMEOUTS)} timed-out attempts ({limits}).")
+
+        yield ask_hosted
 
 
 def messages(question):

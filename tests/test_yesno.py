@@ -236,6 +236,11 @@ else:
                     self.assertIn("Respond with only YES or NO.", "\n".join([*args, prompt]))
                     self.assertIn(item["prompt"], prompt)
                     self.assertNotIn("rationale", prompt)
+                    if provider == "grok":
+                        self.assertEqual(args[args.index("--tools") + 1], "read_file")
+                        denied = args[args.index("--disallowed-tools") + 1].split(",")
+                        self.assertTrue({"read_file", "search_tool", "use_tool"}.issubset(denied))
+                        self.assertNotIn("--max-turns", args)
                     if "context" in item:
                         self.assertIn(item["context"], prompt)
         self.assertEqual(len(self.reports()), 3)
@@ -243,6 +248,28 @@ else:
         saved = [r for r in rows(self.reports()[0]) if r["event"] == "answer"]
         self.assertEqual(saved[2]["reply"], "NO, because...")
         self.assertEqual(saved[1]["context"], QUESTIONS[1]["context"])
+
+    def test_hosted_timeout_retries_the_same_question_and_effort(self):
+        notices = []
+        with patch.dict(os.environ, {**self.env, "BENCH_DELAY": "1"}), \
+                patch.object(worker, "HOSTED_TIMEOUTS", (0.6, 3)), \
+                worker.answerer("codex", "selected", self.root, None, notices.append, effort="low") as ask:
+            self.assertEqual(ask("Is two even?"), "YES")
+        first, retry = rows(self.log)
+        self.assertEqual(first, retry)
+        self.assertIn('model_reasoning_effort="low"', first[1])
+        self.assertEqual(len(notices), 1)
+        self.assertIn("Retrying this question", notices[0])
+
+    def test_repeated_hosted_timeout_is_a_provider_error(self):
+        notices = []
+        with patch.dict(os.environ, {**self.env, "BENCH_DELAY": "30"}), \
+                patch.object(worker, "HOSTED_TIMEOUTS", (0.6, 0.8)), \
+                worker.answerer("codex", "selected", self.root, None, notices.append) as ask:
+            with self.assertRaisesRegex(RuntimeError, "no answer after 2 timed-out attempts"):
+                ask("Is two even?")
+        self.assertEqual(len(rows(self.log)), 2)
+        self.assertEqual(len(notices), 1)
 
     def test_lowercase_reply_is_a_format_failure(self):
         self.env["BENCH_REPLY"] = "yes"

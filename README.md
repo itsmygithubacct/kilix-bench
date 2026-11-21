@@ -196,6 +196,12 @@ run history for CPU, GPU, RAM and timing comparisons. **Q** closes the display.
 An active run continues until completion or an explicit **S** or `stop`.
 The package also supports `kilix-bench yesno` and `kilix-bench yesno tui`.
 
+Grok receives each question in a fresh session with no callable tools. A
+hosted request that times out after 180 seconds gets one retry on the same
+question with a 360-second limit. The journal records the retry and includes
+both attempts in the question's elapsed time. A second timeout saves the
+partial run as failed.
+
 Ollama decision models such as AutoTrust Jev use System One's yes/no question.
 The journal preserves the probability, with 0.5 or higher scored as YES.
 The **kilix** provider uses installed Needle2, Needle3 and Kilix LFM2 weights.
