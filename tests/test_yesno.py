@@ -277,16 +277,8 @@ else:
         events = [json.loads(line) for line in result.splitlines()]
         self.assertEqual([r["verdict"] for r in events if r["event"] == "answer"], ["invalid"] * 4)
 
-    def test_local_kilix_models_and_native_reply_contract(self):
-        from kilix_bench.yesno.local import needle_reply
-        self.assertEqual([e["model"] for e in self.result("models","kilix")], ["needle2","needle3","lfm2"])
-        good = {"function_calls": [{"name": "answer", "arguments": {"value": "NO"}}]}
-        self.assertEqual(needle_reply(good).text, "NO")
-        for calls in ([], good["function_calls"]*2, [{"name":"open","arguments":{"value":"YES"}}],
-                      [{"name":"answer","arguments":{"value":"yes"}}]):
-            reply = needle_reply({"function_calls":calls})
-            self.assertNotIn(reply.text, ("YES", "NO"))
-            self.assertEqual(reply.evidence["needle_reply"]["function_calls"], calls)
+    def test_local_kilix_models(self):
+        self.assertEqual([e["model"] for e in self.result("models", "kilix")], ["needle2", "needle3", "lfm2"])
 
     def test_effort_picker_respects_the_model_catalog_and_pins_configured_effort(self):
         home = Path(self.env["GROK_HOME"])

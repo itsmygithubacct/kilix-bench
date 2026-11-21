@@ -6,6 +6,8 @@ from pathlib import Path
 import sys
 from typing import NamedTuple
 
+from kilix_bench.yesno.needle2 import open_needle2
+
 
 KILIX_MODELS = ("needle2", "needle3", "lfm2")
 
@@ -27,23 +29,32 @@ def decision_reply(result):
     return NativeReply(text, {"decision": evidence})
 
 
+NEEDLE_CONTRACT = "yesno-needle-tools/v2"
+NEEDLE_CHOICES = {"answer_yes": "YES", "answer_no": "NO"}
+
+
+def needle_tools():
+    return [{"name": name, "description": f"Respond {vote} to a yes/no question when the answer is {vote}.",
+             "parameters": {"type": "object", "properties": {}, "required": []}}
+            for name, vote in NEEDLE_CHOICES.items()]
+
+
 def needle_reply(result):
     calls = result.get("function_calls")
-    text = result.get("raw_text")
-    if isinstance(calls, list) and len(calls) == 1 and isinstance(calls[0], dict):
+    raw = result.get("raw_text")
+    failed = (result.get("error") or result.get("type") == "error" or
+              result.get("success") is False or result.get("reason") == "runtime_failure")
+    if not failed and isinstance(calls, list) and len(calls) == 1 and isinstance(calls[0], dict):
         call = calls[0]
-        args = call.get("arguments")
-        if (not result.get("error") and result.get("type") != "error" and result.get("success") is not False
-                and call.get("name") == "answer" and isinstance(args, dict)
-                and set(args) == {"value"} and args["value"] in ("YES", "NO")):
-            return NativeReply(args["value"], {"needle_reply": result})
-    if not isinstance(text, str) or (calls and text.strip() in ("YES", "NO")):
-        text = json.dumps(result, ensure_ascii=False)
-    return NativeReply(text, {"needle_reply": result})
+        if call.get("arguments") == {} and isinstance(call.get("name"), str) and call["name"] in NEEDLE_CHOICES:
+            return NativeReply(NEEDLE_CHOICES[call["name"]], {"needle_reply": result})
+    if not isinstance(raw, str) or ((failed or calls not in (None, [])) and raw.strip() in ("YES", "NO")):
+        raw = json.dumps(result, ensure_ascii=False)
+    return NativeReply(raw, {"needle_reply": result})
 
 
 @contextmanager
-def kilix_answerer(model, instruction, artifact):
+def kilix_answerer(model, instruction, artifact, scratch):
     home = Path(os.environ.get("GPU_TERMINAL_HOME") or Path.home()/".local/gpu_terminal")
     data = Path(os.environ.get("KILIX_DATA_HOME") or home/"kilix/data")
     root = Path(os.environ.get("KILIX_CONTENT_ROOT") or data/"desktop-apps")
@@ -70,14 +81,15 @@ def kilix_answerer(model, instruction, artifact):
             return
         if model not in ("needle2", "needle3"):
             raise ValueError("Choose needle2, needle3, or lfm2.")
-        import libengine
-        tools = [{"name": "answer", "description": instruction,
-                  "parameters": {"type": "object", "properties": {
-                      "value": {"type": "string", "enum": ["YES", "NO"]}}, "required": ["value"]}}]
+        tools = needle_tools()
         with ExitStack() as stack:
-            if model == "needle3":
+            if model == "needle2":
+                import tuning
+                complete = stack.enter_context(open_needle2(asset, tuning, str(root), tools, scratch, artifact))
+            else:
                 import commands_needle3
                 import compact_model
+                import libengine
                 compact_model.require_cached_platform()
                 release = commands_needle3.selection()
                 images = []
@@ -88,25 +100,19 @@ def kilix_answerer(model, instruction, artifact):
                     images.append(image)
                 library, weights = images
                 artifact(weights.sha256)
-                engine = libengine.LibEngine(library, tools, weights, generation=3, backend="rust3", preparation_timeout=90)
-            else:
-                import tuning
-                selected = tuning.selected()
-                if selected:
-                    library = stack.enter_context(asset.installed_library(str(root)))
-                    path = Path(selected["weights"])
-                    weights = stack.enter_context(asset.load_verified(path, selected["sha256"], path.stat().st_size))
-                    artifact(weights.sha256)
-                    engine = libengine.LibEngine(library, tools, weights)
-                else:
-                    import engine as needle_engine
-                    image = stack.enter_context(asset.from_installed(str(root)))
-                    artifact(image.sha256)
-                    engine = needle_engine.Engine(image, tools)
-            runtime = stack.enter_context(engine)
+                engine = stack.enter_context(libengine.LibEngine(
+                    library, tools, weights, generation=3, backend="rust3", preparation_timeout=90))
+
+                def complete(text):
+                    engine.reset()
+                    return engine.complete(text)
+
             def ask_needle(question, **_):
-                runtime.reset()
-                return needle_reply(runtime.complete("Answer the question: " + " ".join(question.splitlines())))
+                if model == "needle2":
+                    request = "Answer this question with only YES or NO: " + question
+                else:
+                    request = f"Answer this yes/no question: {question}\n{instruction}"
+                return needle_reply(complete(request))
             yield ask_needle
     finally:
         sys.path.remove(str(app))

@@ -205,11 +205,21 @@ partial run as failed.
 Ollama decision models such as AutoTrust Jev use System One's yes/no question.
 The journal preserves the probability, with 0.5 or higher scored as YES.
 The **kilix** provider uses installed Needle2, Needle3 and Kilix LFM2 weights.
-Needle receives one answer tool with a YES/NO value. Model-generated tool
-calls are recorded as data. LFM2 receives the same text instruction as the
-other chat models. The CLI lists Ollama tags, GGUF paths and named hosted
-models. CPU/GPU/RAM describe the computer running the benchmark. Timings for
-remote inference include the request round trip.
+Needle2 and Needle3 answer by calling either `answer_yes()` or `answer_no()`.
+One call with empty arguments records the corresponding vote. A literal YES or
+NO in a successful text reply also counts. Missing votes, multiple calls,
+unexpected arguments and malformed replies are recorded as invalid. The
+journal retains the native response, the model artifact and the answer
+contract version. LFM2 receives the same text instruction as other chat models.
+
+Each Needle2 question gets a fresh inference process with a 256-token response
+budget. The bench uses the selected tuned weights when configured, or the
+installed stock executable otherwise. Both receive the original question and
+context with line breaks, quotes and backslashes intact. Needle3 reuses the
+verified cached runtime and resets between questions. The CLI lists Ollama
+tags, GGUF paths and named hosted models. CPU/GPU/RAM describe the computer
+running the benchmark. Timings for remote inference include the request round
+trip.
 
 ## Tests
 

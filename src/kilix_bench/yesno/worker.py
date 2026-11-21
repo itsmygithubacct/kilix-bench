@@ -22,7 +22,7 @@ from urllib.request import Request, urlopen
 import uuid
 
 from kilix_bench.yesno.comparison import write_comparison
-from kilix_bench.yesno.local import KILIX_MODELS, NativeReply, decision_reply, kilix_answerer
+from kilix_bench.yesno.local import KILIX_MODELS, NEEDLE_CONTRACT, NativeReply, decision_reply, kilix_answerer
 from kilix_bench.yesno.machine import RunnerMonitor, backend_scope
 from kilix_bench.yesno.models import effort_options, executable, gguf_artifact, gguf_snapshot, hosted_catalog, stop_child
 from kilix_bench.yesno.records import compare_files, model_id, ranking_events, rankings_document, save_rankings
@@ -208,7 +208,7 @@ def onebit():
 @contextmanager
 def answerer(provider, model, scratch, chat_backend, status, identify=None, effort=None, artifact=None):
     if provider == "kilix":
-        with kilix_answerer(model, INSTRUCTION, artifact) as ask:
+        with kilix_answerer(model, INSTRUCTION, artifact, scratch) as ask:
             yield ask
     elif provider == "ollama":
         info = ensure_ollama(model, status)
@@ -325,7 +325,8 @@ def perform(provider, model, output, path, requested_effort=""):
     outcome, detail = "end", {}
     effort = requested_effort if provider in HOSTED else None
     record("begin", provider=provider, model=model, effort=effort, total=0, backend_scope=scope,
-           file=path.name, instruction=INSTRUCTION, split="dev")
+           file=path.name, instruction=INSTRUCTION, split="dev",
+           **({"answer_contract": NEEDLE_CONTRACT} if provider == "kilix" and model in ("needle2", "needle3") else {}))
     monitor = threading.Thread(target=check_stop, daemon=True)
     monitor.start()
     try:
