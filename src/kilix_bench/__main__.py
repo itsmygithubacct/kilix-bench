@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 
+from kilix_bench import local_models
 from kilix_bench.isolate import kilix_home_from_env, sandbox
 from kilix_bench.report import render_text, write_run
 
@@ -14,12 +15,13 @@ from kilix_bench.report import render_text, write_run
 def _parser():
     parser = argparse.ArgumentParser(prog="kilix-bench")
     parser.add_argument(
-        "--suite", choices=("desktop", "render", "text", "onebit"),
+        "--suite", choices=("desktop", "render", "text", "onebit", *local_models.SUITES),
         default="desktop",
         help="desktop measures a Kilix 95 desk; render measures the graphics SDK; "
              "text compares Kitty cells, Kitty graphics, and Neuronte; "
              "onebit asks a model yes/no items it answers with 0 or 1 "
-             "(see --suite onebit --help)")
+             "(see --suite onebit --help). For local model benchmarks, see "
+             "--suite boolq, ifeval, gsm8k or llama-bench followed by --help.")
     parser.add_argument("--desktop", default="",
                         help="Path of a Kilix 95 checkout (desktop suite)")
     parser.add_argument("--kilix-home", default="",
@@ -52,15 +54,13 @@ def _run(command, env, root):
     return json.loads(result.stdout)
 
 
-def _onebit(argv):
-    """The OneBit suite has its own options; hand it everything else."""
+def _suite_options(argv):
     for index, arg in enumerate(argv):
-        if arg == "--suite" and index + 1 < len(argv) and (
-                argv[index + 1] == "onebit"):
-            return argv[:index] + argv[index + 2:]
-        if arg == "--suite=onebit":
-            return argv[:index] + argv[index + 1:]
-    return None
+        if arg == "--suite" and index + 1 < len(argv):
+            return argv[index + 1], argv[:index] + argv[index + 2:]
+        if arg.startswith("--suite="):
+            return arg.partition("=")[2], argv[:index] + argv[index + 1:]
+    return None, argv
 
 
 def main(argv=None):
@@ -68,8 +68,10 @@ def main(argv=None):
     if argv and argv[0] == "onebit":
         from kilix_bench.onebit.cli import main as onebit_main
         return onebit_main(argv[1:])
-    rest = _onebit(argv)
-    if rest is not None:
+    suite, rest = _suite_options(argv)
+    if suite in local_models.SUITES:
+        return local_models.run(suite, rest)
+    if suite == "onebit":
         from kilix_bench.onebit.cli import run_command
         return run_command(rest)
     args = _parse_argv(argv)

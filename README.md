@@ -76,7 +76,7 @@ directory: the parent stops before starting either suite when it is missing.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--suite desktop\|render\|text\|onebit` | `desktop` | What to measure (`onebit` takes its own options, below) |
+| `--suite desktop\|render\|text\|onebit\|boolq\|ifeval\|gsm8k\|llama-bench` | `desktop` | What to measure (`onebit` takes its own options, below) |
 | `--desktop PATH` | none | Kilix 95 checkout (desktop suite; must contain `main.py`) |
 | `--kilix-home PATH` | `KILIX_HOME`, else `~/.local/gpu_terminal/sources/kilix` | Kilix checkout with `config/kilix_sdk` |
 | `--width N` / `--height N` | `1920` / `1080` | Frame size |
@@ -161,6 +161,45 @@ PYTHONPATH=src python3 -m kilix_bench onebit chart progress.jsonl
 
 The contract, item format, split rules, scoring and backends are in
 [docs/onebit.md](docs/onebit.md).
+
+## Local language models
+
+Use BoolQ for passage-based yes/no accuracy, IFEval for verifiable instructions,
+and GSM8K for exact numerical answers. Kilix delegates to the named
+EleutherAI task with its upstream prompt, split, scoring and few-shot defaults.
+BoolQ scores candidate word likelihoods. OneBit measures the separate ability
+to return a correct digit.
+
+Install a version of [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness)
+with the dependencies for your selected tasks and backend. For GGUF use a
+revision with the teacher-forced likelihood implementation, such as
+`d6de81643928d653435c431bae19945d41d32520`. In a Python environment:
+
+```sh
+pip install 'lm_eval[ifeval] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@d6de81643928d653435c431bae19945d41d32520'
+```
+
+Include the `hf` extra for Transformers models. With a compatible llama-server
+serving a GGUF, or an instruction model in a local Transformers directory:
+
+```sh
+kilix-bench --suite boolq --backend gguf --model-args base_url=http://127.0.0.1:8080
+kilix-bench --suite ifeval --backend hf --model-args pretrained=./instruct-model --apply-chat-template
+kilix-bench --suite gsm8k --backend hf --model-args pretrained=./instruct-model --apply-chat-template
+```
+
+Use `--limit 10` for a smoke test and `--output DIRECTORY` to retain the
+native quality report. The harness may download datasets on the first run.
+Record the harness version, model revision, quantization and chat settings
+when comparing scores.
+
+For throughput, install llama.cpp's `llama-bench` executable on PATH. Kilix
+writes its native JSON to standard output. By default it measures 512 prompt
+tokens and 128 generated tokens in separate tests, with five repetitions each.
+
+```sh
+kilix-bench --suite llama-bench --model-file ./model.gguf > throughput.json
+```
 
 ## Tests
 
