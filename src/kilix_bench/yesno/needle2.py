@@ -1,4 +1,5 @@
 """One independent, bounded Needle 2 turn using the selected Kilix asset."""
+import base64
 from contextlib import ExitStack, contextmanager
 import ctypes
 import json
@@ -13,6 +14,26 @@ import sys
 # longer generations for command arguments; the bench only needs one call.
 MAX_TOKENS = 256
 TIMEOUT = 120
+
+
+def decode_reply(output):
+    text = output.decode("utf-8", errors="surrogateescape")
+    readable = output.decode("utf-8", errors="replace")
+    try:
+        reply = json.loads(text)
+        # The native serializer may cut a UTF-8 character in the explanation
+        # even when the call and its status are complete. Only repair that field.
+        if isinstance(reply, dict) and isinstance(reply.get("reasoning"), str):
+            reasoning = reply["reasoning"].encode("utf-8", errors="surrogateescape")
+            reply["reasoning"] = reasoning.decode("utf-8", errors="replace")
+        json.dumps(reply, ensure_ascii=False).encode("utf-8")
+    except ValueError:
+        reply = {"type": "error", "error": "malformed native reply", "raw_text": readable}
+    if not isinstance(reply, dict):
+        reply = {"type": "error", "error": "unexpected native reply", "response": reply}
+    if readable != text:
+        reply["native_output_base64"] = base64.b64encode(output).decode("ascii")
+    return reply
 
 
 def tuned_turn(library_fd, weights_fd, tools_path):
@@ -72,16 +93,7 @@ def open_needle2(asset, tuning, root, tools, scratch, artifact):
                 message = result.stderr.decode("utf-8", errors="replace").strip().splitlines()
                 detail = message[-1][:200] if message else "no native response"
                 raise RuntimeError(f"Needle 2 exited with status {result.returncode}: {detail}")
-            try:
-                reply = json.loads(result.stdout)
-            except (UnicodeError, ValueError):
-                # The tuned library can emit malformed JSON in its reasoning.
-                # Keep the actual output as invalid without losing later turns.
-                return {"type": "error", "error": "malformed native reply",
-                        "raw_text": result.stdout.decode("utf-8", errors="backslashreplace")}
-            if not isinstance(reply, dict):
-                return {"type": "error", "error": "unexpected native reply", "response": reply}
-            return reply
+            return decode_reply(result.stdout)
 
         yield complete
 

@@ -210,7 +210,9 @@ One call with empty arguments records the corresponding vote. A literal YES or
 NO in a successful text reply also counts. Missing votes, multiple calls,
 unexpected arguments and malformed replies are recorded as invalid. The
 journal retains the native response, the model artifact and the answer
-contract version. LFM2 receives the same text instruction as other chat models.
+contract version. When Needle2 cuts a UTF-8 character in its explanation,
+the bench can still read an intact vote and saves the original response bytes.
+LFM2 receives the same text instruction as other chat models.
 
 Each Needle2 question gets a fresh inference process with a 256-token response
 budget. The bench uses the selected tuned weights when configured, or the

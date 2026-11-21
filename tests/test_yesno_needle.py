@@ -1,4 +1,5 @@
 """The native answer actions, verified model selection, and independent turns."""
+import base64
 from contextlib import ExitStack, nullcontext
 import json
 import os
@@ -53,6 +54,20 @@ class NeedleTest(unittest.TestCase):
                 self.assertNotIn(parsed.text.strip(), ("YES", "NO"))
                 self.assertEqual(parsed.evidence["needle_reply"], result)
         self.assertEqual(local.needle_reply({"raw_text": "NO"}).text, "NO")
+
+    def test_incomplete_utf8_in_the_explanation_preserves_the_vote_and_original_bytes(self):
+        output = (b'{"success":true,"function_calls":[{"name":"answer_no","arguments":{}}],'
+                  b'"reasoning":"truncated \xe2\x80"}')
+        native = needle2.decode_reply(output)
+        self.assertEqual(local.needle_reply(native).text, "NO")
+        self.assertEqual(native["reasoning"], "truncated \ufffd")
+        self.assertEqual(base64.b64decode(native["native_output_base64"]), output)
+        for damaged in (output.replace(b"true", b"false"), output.replace(b"answer_no", b"answer_\xfe"),
+                        output.replace(b'"success"', b'"su\xffccess"'), output[:-1]):
+            result = needle2.decode_reply(damaged)
+            self.assertNotIn(local.needle_reply(result).text.strip(), ("YES", "NO"))
+            self.assertEqual(base64.b64decode(result["native_output_base64"]), damaged)
+            json.dumps(result, ensure_ascii=False).encode("utf-8")
 
     def test_stock_uses_exact_prompt_and_preserves_malformed_native_output(self):
         exe = self.scratch / "stock"
