@@ -65,6 +65,9 @@ def _onebit(argv):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "yesno":
+        from kilix_bench.yesno.cli import main as yesno_main
+        return yesno_main(argv[1:])
     if argv and argv[0] == "onebit":
         from kilix_bench.onebit.cli import main as onebit_main
         return onebit_main(argv[1:])

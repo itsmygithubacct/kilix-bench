@@ -5,8 +5,8 @@ redraw, how many bytes the graphics SDK would send for a change, and how a
 full grid of text compares as Kitty cells, Kitty graphics, and Neuronte. Also
 OneBit, a yes/no test of how well a model answers with a single `0` or `1`.
 
-Not shipped: a development tool run from a checkout. No Plebian-OS release,
-Kilix or catalog tree references it.
+The frame-path measurements run from a development checkout. The literal
+YES/NO runner is also available independently and in PuzzLLM.
 
 ## What it does
 
@@ -161,6 +161,49 @@ PYTHONPATH=src python3 -m kilix_bench onebit chart progress.jsonl
 
 The contract, item format, split rules, scoring and backends are in
 [docs/onebit.md](docs/onebit.md).
+
+## Literal YES/NO benchmark
+
+Run `bin/kilix-yesno-tui` for the interactive terminal monitor or
+`bin/kilix-yesno --help` for the CLI. Installed copies expose the same
+two commands on PATH. Both share PuzzLLM's journals and rankings under
+`~/.local/share/puzzllm/bench/yesno/`. The state directory follows
+`XDG_DATA_HOME`, `PUZZLLM_STATE`, or an explicit `--state DIR`.
+
+```sh
+bin/kilix-yesno models kilix
+bin/kilix-yesno run kilix needle3 --detach
+bin/kilix-yesno watch
+bin/kilix-yesno efforts codex gpt-6.2-astra
+bin/kilix-yesno run codex gpt-6.2-astra --effort high
+bin/kilix-yesno rankings
+bin/kilix-yesno answers --invalid --json
+bin/kilix-yesno compare first/rankings.json second/rankings.json
+```
+
+Each question gets a fresh request. After surrounding whitespace is trimmed,
+only uppercase `YES` and `NO` are valid text replies. A row with any invalid
+reply is red and marked `!`. Each provider, model and reasoning effort has
+its own row. Average correct and average accuracy use finished runs. Invalid
+counts include every recorded attempt. `N+` means that some older attempts
+lack a breakdown. Scores and available timings survive restoring a rankings
+file on its own. The JSONL journals hold the questions, answer keys, replies,
+native decisions, latencies and resource measurements.
+
+In the TUI press **N** to choose a provider, model and hosted effort, **B** for
+rankings, **Enter** to inspect a run, **I** for invalid replies and **C** in
+run history for CPU, GPU, RAM and timing comparisons. **Q** closes the display.
+An active run continues until completion or an explicit **S** or `stop`.
+The package also supports `kilix-bench yesno` and `kilix-bench yesno tui`.
+
+Ollama decision models such as AutoTrust Jev use System One's yes/no question.
+The journal preserves the probability, with 0.5 or higher scored as YES.
+The **kilix** provider uses installed Needle2, Needle3 and Kilix LFM2 weights.
+Needle receives one answer tool with a YES/NO value. Model-generated tool
+calls are recorded as data. LFM2 receives the same text instruction as the
+other chat models. The CLI lists Ollama tags, GGUF paths and named hosted
+models. CPU/GPU/RAM describe the computer running the benchmark. Timings for
+remote inference include the request round trip.
 
 ## Tests
 

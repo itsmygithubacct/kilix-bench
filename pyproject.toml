@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kilix-bench"
-version = "0.2.3"
+version = "0.2.4"
 description = "Offscreen frame-path measurements for Kilix"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,11 +13,14 @@ authors = [{name = "itsmygithubacct"}]
 
 [project.scripts]
 kilix-bench = "kilix_bench.__main__:main"
+kilix-yesno = "kilix_bench.yesno.cli:main"
+kilix-yesno-tui = "kilix_bench.yesno.cli:tui_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
+"kilix_bench.yesno" = ["LICENSE"]
 "kilix_bench.onebit" = [
     "system-prompt-v1.txt",
     "items/*.jsonl",
