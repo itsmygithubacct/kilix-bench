@@ -1,3 +1,4 @@
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -23,6 +24,9 @@ class CodingSuites(unittest.TestCase):
             self.assertNotIn("--limit", command)
             self.assertTrue(Path(command[command.index("--include_path") + 1]).is_dir())
             self.assertIn("--log_samples", command)
+            if suite == "humaneval-plus":
+                self.assertEqual(command[command.index("--model") + 1], "kilix-gguf-code")
+                self.assertIn("kilix_gguf_code", command)
 
     @unittest.skipUnless(shutil.which("bwrap"), "requires Linux bubblewrap")
     def test_crux_checks_alternate_inputs_and_literal_outputs(self):
@@ -31,6 +35,15 @@ class CodingSuites(unittest.TestCase):
         self.assertEqual(tasks.score_input(doc, ["4"]), {"pass@1": 0})
         self.assertEqual(tasks.score_output(doc, ['"3"']), {"pass@1": 1})
         self.assertEqual(tasks.score_output(doc, ["3"]), {"pass@1": 0})
+
+    @unittest.skipUnless(importlib.util.find_spec("lm_eval"), "requires the optional lm-eval harness")
+    def test_gguf_code_retains_python_indentation(self):
+        from kilix_bench.coding_tasks.kilix_gguf_code import GGUFCode
+
+        model = GGUFCode(base_url="http://localhost:8080", parallel=1)
+        body = "\n    if values:\n        return values[0]\n    return None\n"
+        with patch.object(model, "gguf_completion", return_value={"choices": [{"text": body}]}):
+            self.assertEqual(model._generate_one(("def first(values):\n", {"until": ["\ndef"]})), body)
 
     def test_terminal_rewards_must_cover_every_selected_task(self):
         with tempfile.TemporaryDirectory() as tmp:
