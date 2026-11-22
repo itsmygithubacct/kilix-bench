@@ -89,8 +89,7 @@ def run_job(model, endpoint, output, selected, status=print, context_length=None
     env = os.environ.copy()
     options = {}
     if endpoint:
-        model = model or endpoint_model(endpoint)
-        model = "openai/" + model.removeprefix("openai/")
+        model = "openai/" + (model or endpoint_model(endpoint))
         options["api_base"] = api_base(endpoint)
         env["OPENAI_API_KEY"] = env.get("KILIX_BENCH_API_KEY") or "local"
     if not model:

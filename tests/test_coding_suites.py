@@ -62,6 +62,16 @@ class CodingSuites(unittest.TestCase):
         with self.assertRaises(ValueError):
             terminal_bench.run_job("model", None, "jobs", ["unknown-task"])
 
+    @patch("kilix_bench.terminal_bench.collect", return_value={"fix-git": 1})
+    @patch("kilix_bench.terminal_bench.shutil.which", return_value="/bin/true")
+    def test_terminal_passes_exact_served_model_and_token_budget(self, _launcher, _scores):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = terminal_bench.run_job("openai/local-model", "http://localhost:8000/v1", tmp,
+                                         ["fix-git"], lambda msg: None, context_length=8192, max_tokens=256)
+            agent, = json.loads((run / "job.json").read_text())["agents"]
+            self.assertEqual(agent["model_name"], "openai/openai/local-model")
+            self.assertEqual(agent["kwargs"]["llm_kwargs"]["max_tokens"], 256)
+
 
 if __name__ == "__main__":
     unittest.main()
