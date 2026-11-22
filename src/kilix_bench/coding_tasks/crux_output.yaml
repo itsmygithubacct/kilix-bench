@@ -1,0 +1,6 @@
+include: common
+task: kilix_cruxeval_output
+custom_dataset: !function tasks.crux_dataset
+doc_to_text: !function tasks.output_prompt
+doc_to_target: "{{output}}"
+process_results: !function tasks.score_output

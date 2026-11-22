@@ -2,8 +2,20 @@
 
 import argparse
 import subprocess
+from pathlib import Path
 
-SUITES = ("boolq", "ifeval", "gsm8k", "llama-bench")
+CODING_TASKS = {
+    "cruxeval": ("kilix_cruxeval_input", "kilix_cruxeval_output"),
+    "humaneval-plus": ("kilix_humaneval_plus",),
+}
+SUITES = ("boolq", "ifeval", "gsm8k", "llama-bench", *CODING_TASKS, "terminal-bench")
+
+
+def task_args(suite):
+    if suite in CODING_TASKS:
+        return ["--tasks", ",".join(CODING_TASKS[suite]),
+                "--include_path", str(Path(__file__).with_name("coding_tasks"))]
+    return ["--tasks", suite]
 
 
 def positive(value):
@@ -15,6 +27,9 @@ def positive(value):
 
 def run(suite, argv):
     parser = argparse.ArgumentParser(prog=f"kilix-bench --suite {suite}")
+    if suite == "terminal-bench":
+        from kilix_bench.terminal_bench import cli
+        return cli(parser, argv)
     if suite == "llama-bench":
         parser.add_argument("--model-file", required=True, help="local GGUF file")
         parser.add_argument("--prompt-tokens", type=positive, default=512)
@@ -30,7 +45,7 @@ def run(suite, argv):
         parser.add_argument("--output", help="upstream results directory")
         parser.add_argument("--apply-chat-template", action="store_true")
         args = parser.parse_args(argv)
-        command = ["lm-eval", "run", "--tasks", suite, "--model", args.backend,
+        command = ["lm-eval", "run", *task_args(suite), "--model", args.backend,
                    "--model_args", args.model_args]
         if args.apply_chat_template:
             command.append("--apply_chat_template")
@@ -38,6 +53,8 @@ def run(suite, argv):
             command.extend(["--limit", str(args.limit)])
         if args.output:
             command.extend(["--output_path", args.output])
+            if suite in CODING_TASKS:
+                command.append("--log_samples")
     try:
         result = subprocess.run(command, check=False)
     except FileNotFoundError:

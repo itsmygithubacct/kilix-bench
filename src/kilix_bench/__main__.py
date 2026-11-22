@@ -21,7 +21,7 @@ def _parser():
              "text compares Kitty cells, Kitty graphics, and Neuronte; "
              "onebit asks a model yes/no items it answers with 0 or 1 "
              "(see --suite onebit --help). For local model benchmarks, see "
-             "--suite boolq, ifeval, gsm8k or llama-bench followed by --help.")
+             "--suite SUITE --help.")
     parser.add_argument("--desktop", default="",
                         help="Path of a Kilix 95 checkout (desktop suite)")
     parser.add_argument("--kilix-home", default="",
