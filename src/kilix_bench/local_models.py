@@ -1,6 +1,7 @@
 """Run upstream quality and throughput benchmarks with their native scoring."""
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,16 @@ def task_args(suite):
     return ["--tasks", suite]
 
 
+def harness_model(suite, backend):
+    if suite == "humaneval-plus" and backend in ("gguf", "ggml"):
+        # lm-eval can live in a different environment from the CLI or game.
+        directory = str(Path(__file__).with_name("coding_tasks").resolve())
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (directory, env.get("PYTHONPATH"))))
+        return ["--model", "kilix-gguf-code", "--plugins", "kilix_gguf_code"], env
+    return ["--model", backend], None
+
+
 def positive(value):
     number = int(value)
     if number < 1:
@@ -27,6 +38,7 @@ def positive(value):
 
 def run(suite, argv):
     parser = argparse.ArgumentParser(prog=f"kilix-bench --suite {suite}")
+    env = None
     if suite == "terminal-bench":
         from kilix_bench.terminal_bench import cli
         return cli(parser, argv)
@@ -45,7 +57,8 @@ def run(suite, argv):
         parser.add_argument("--output", help="upstream results directory")
         parser.add_argument("--apply-chat-template", action="store_true")
         args = parser.parse_args(argv)
-        command = ["lm-eval", "run", *task_args(suite), "--model", args.backend,
+        model, env = harness_model(suite, args.backend)
+        command = ["lm-eval", "run", *task_args(suite), *model,
                    "--model_args", args.model_args]
         if args.apply_chat_template:
             command.append("--apply_chat_template")
@@ -56,7 +69,7 @@ def run(suite, argv):
             if suite in CODING_TASKS:
                 command.append("--log_samples")
     try:
-        result = subprocess.run(command, check=False)
+        result = subprocess.run(command, check=False, env=env)
     except FileNotFoundError:
         parser.exit(127, f"{parser.prog}: install {command[0]} and add it to PATH\n")
     return result.returncode if result.returncode >= 0 else 128 - result.returncode
