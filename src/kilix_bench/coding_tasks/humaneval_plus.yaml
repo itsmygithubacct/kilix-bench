@@ -1,0 +1,10 @@
+include: common
+task: kilix_humaneval_plus
+custom_dataset: !function tasks.human_dataset
+doc_to_text: "{{prompt}}"
+doc_to_target: "{{canonical_solution}}"
+process_results: !function tasks.score_human
+generation_kwargs:
+  do_sample: false
+  max_gen_toks: 1024
+  until: ["\nclass", "\ndef", "\n#", "\nif", "\nprint"]

@@ -21,6 +21,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "kilix_bench.yesno" = ["LICENSE"]
+"kilix_bench.coding_tasks" = ["*.yaml", "common"]
 "kilix_bench.onebit" = [
     "system-prompt-v1.txt",
     "items/*.jsonl",

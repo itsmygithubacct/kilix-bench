@@ -1,0 +1,6 @@
+include: common
+task: kilix_cruxeval_input
+custom_dataset: !function tasks.crux_dataset
+doc_to_text: !function tasks.input_prompt
+doc_to_target: "{{input}}"
+process_results: !function tasks.score_input

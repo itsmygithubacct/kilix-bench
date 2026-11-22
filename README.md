@@ -76,7 +76,7 @@ directory: the parent stops before starting either suite when it is missing.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--suite desktop\|render\|text\|onebit` | `desktop` | What to measure (`onebit` takes its own options, below) |
+| `--suite desktop\|render\|text\|onebit\|boolq\|ifeval\|gsm8k\|llama-bench\|cruxeval\|humaneval-plus\|terminal-bench` | `desktop` | What to measure (`onebit` takes its own options, below) |
 | `--desktop PATH` | none | Kilix 95 checkout (desktop suite; must contain `main.py`) |
 | `--kilix-home PATH` | `KILIX_HOME`, else `~/.local/gpu_terminal/sources/kilix` | Kilix checkout with `config/kilix_sdk` |
 | `--width N` / `--height N` | `1920` / `1080` | Frame size |
@@ -242,6 +242,91 @@ verified cached runtime and resets between questions. The CLI lists Ollama
 tags, GGUF paths and named hosted models. CPU/GPU/RAM describe the computer
 running the benchmark. Timings for remote inference include the request round
 trip.
+
+## Local language models
+
+Use BoolQ for passage-based yes/no accuracy, IFEval for verifiable instructions,
+and GSM8K for exact numerical answers. Kilix delegates to the named
+EleutherAI task with its upstream prompt, split, scoring and few-shot defaults.
+BoolQ scores candidate word likelihoods. OneBit measures the separate ability
+to return a correct digit.
+
+Install a version of [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness)
+with the dependencies for your selected tasks and backend. For GGUF use a
+revision with the teacher-forced likelihood implementation, such as
+`d6de81643928d653435c431bae19945d41d32520`. In a Python environment:
+
+```sh
+pip install 'lm_eval[ifeval] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git@d6de81643928d653435c431bae19945d41d32520'
+```
+
+Include the `hf` extra for Transformers models. With a compatible llama-server
+serving a GGUF, or an instruction model in a local Transformers directory:
+
+```sh
+kilix-bench --suite boolq --backend gguf --model-args base_url=http://127.0.0.1:8080
+kilix-bench --suite ifeval --backend hf --model-args pretrained=./instruct-model --apply-chat-template
+kilix-bench --suite gsm8k --backend hf --model-args pretrained=./instruct-model --apply-chat-template
+```
+
+Use `--limit 10` for a smoke test and `--output DIRECTORY` to retain the
+native quality report. The harness may download datasets on the first run.
+Record the harness version, model revision, quantization and chat settings
+when comparing scores.
+
+### Coding benchmarks
+
+`--suite cruxeval` runs both input and output prediction over all 800
+[CRUXEval](https://github.com/facebookresearch/cruxeval) functions. Each
+track reports its own pass@1. Input prediction accepts any arguments producing
+the requested output. `--suite humaneval-plus` runs all 164 function
+completions against both the base and expanded [EvalPlus](https://github.com/evalplus/evalplus)
+v0.1.10 cases. Both suites generate one greedy answer per item. Use a
+completion backend for HumanEval+ to continue the supplied function.
+
+These suites use the same lm-eval installation and backend options as the
+quality tasks above. On Linux, install bubblewrap with user namespaces and
+system Python 3. HumanEval+ also needs NumPy and psutil for that interpreter.
+The grader runs in a separate namespace with a read-only runtime and private
+temporary storage and network. Pinned datasets and the EvalPlus 0.3.1 grader
+wheel are downloaded on first use, checked by SHA-256 and reused from
+`$XDG_CACHE_HOME/kilix-bench/coding` (default `~/.cache` for the cache root).
+`--limit N` selects N items per track. `--output` saves per-item answers
+alongside the aggregate report.
+
+```sh
+kilix-bench --suite cruxeval --backend gguf --model-args base_url=http://127.0.0.1:8080 --output crux-results
+kilix-bench --suite humaneval-plus --backend gguf --model-args base_url=http://127.0.0.1:8080 --output human-results
+```
+
+`--suite terminal-bench` runs the **74-task engineering profile** of
+[Terminal-Bench 2.0](https://github.com/laude-institute/terminal-bench-2/tree/2fd12b88aafdd04a52c298e3940bcb189f9766d6)
+in the upstream Docker environments using Harbor and Terminus 2. Its score
+is the mean verifier reward across the selected tasks. Keep the task set when
+comparing scores. `--help` lists the individual task names. The default runs
+the entire profile sequentially. Repeating `--task` selects individual tasks.
+Each run saves its pinned Harbor job configuration, worker log, trials and
+score in a new directory. An incomplete or invalid verifier run reports an error.
+
+Install Docker with its Compose plugin and Harbor 0.27.0, or install `uv`
+to run the pinned Harbor version on demand. The first run fetches the task
+files and container images. For an OpenAI-compatible server, `--endpoint`
+uses the model from its models list, or accepts an explicit served ID with
+`--model`. Use `KILIX_BENCH_API_KEY` if that endpoint needs authentication.
+Without `--endpoint`, supply a Harbor provider/model and that provider's
+normal credentials.
+
+```sh
+kilix-bench --suite terminal-bench --endpoint http://127.0.0.1:8080 --context-length 16384 --task fix-git --output terminal-results
+```
+
+For throughput, install llama.cpp's `llama-bench` executable on PATH. Kilix
+writes its native JSON to standard output. By default it measures 512 prompt
+tokens and 128 generated tokens in separate tests, with five repetitions each.
+
+```sh
+kilix-bench --suite llama-bench --model-file ./model.gguf > throughput.json
+```
 
 ## Tests
 

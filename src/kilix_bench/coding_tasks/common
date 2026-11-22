@@ -1,0 +1,14 @@
+output_type: generate_until
+test_split: test
+num_fewshot: 0
+repeats: 1
+generation_kwargs:
+  do_sample: false
+  max_gen_toks: 1024
+  until: ["\n\n"]
+metric_list:
+  - metric: pass@1
+    aggregation: mean
+    higher_is_better: true
+metadata:
+  version: 1
