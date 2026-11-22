@@ -91,7 +91,7 @@ def ensure_ollama(model, status):
 
 
 @contextmanager
-def llama_server(model, scratch, status):
+def llama_server(model, scratch, status, *, context_size=4096):
     path = Path(model).expanduser().resolve(strict=True)
     if not path.is_file() or path.suffix.lower() != ".gguf":
         raise ValueError("Choose a readable GGUF model file.")
@@ -114,7 +114,7 @@ def llama_server(model, scratch, status):
     env = {**os.environ, "LD_LIBRARY_PATH": os.pathsep.join(filter(None, (
         str(Path(binary).resolve().parent), os.environ.get("LD_LIBRARY_PATH"))))}
     args = [binary, "--model", str(path), "--alias", alias, "--host", "127.0.0.1",
-            "--port", str(port), "--parallel", "1", "--ctx-size", "4096", "--jinja", "--no-webui"]
+            "--port", str(port), "--parallel", "1", "--ctx-size", str(context_size), "--jinja", "--no-webui"]
     status("Loading " + path.name)
     with (scratch / "server.log").open("w+") as log:
         server = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
