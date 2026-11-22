@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one independent YES/NO trial per OneBit dev question and stream its results."""
+"""Run one independent YES/NO trial per question in the selected benchmark."""
 import argparse
 import fcntl
 from contextlib import contextmanager
@@ -26,6 +26,7 @@ from kilix_bench.yesno.local import KILIX_MODELS, NEEDLE_CONTRACT, NativeReply, 
 from kilix_bench.yesno.machine import RunnerMonitor, backend_scope
 from kilix_bench.yesno.models import effort_options, executable, gguf_artifact, gguf_snapshot, hosted_catalog, stop_child
 from kilix_bench.yesno.records import compare_files, model_id, ranking_events, rankings_document, save_rankings
+from kilix_bench.yesno.suites import BOOLQ, K12, SUITES, boolq_items
 
 INSTRUCTION = "Respond with only YES or NO."
 HOSTED = ("codex", "grok", "claude")
@@ -295,7 +296,7 @@ def display(record):
     emit(**fields)
 
 
-def perform(provider, model, output, path, requested_effort=""):
+def perform(provider, model, output, path, requested_effort="", suite=K12):
     def record(event, **fields):
         output.write(json.dumps(dict(event=event, **fields), ensure_ascii=False) + "\n")
         output.flush()
@@ -305,7 +306,7 @@ def perform(provider, model, output, path, requested_effort=""):
     def checkpoint():
         try:
             os.fsync(output.fileno())
-            save_rankings(path.parent)
+            save_rankings(path.parent, suite)
         except (OSError, ValueError, TypeError, KeyError) as error:
             record("storage_warning", text=f"Could not save rankings.json ({error})")
 
@@ -325,7 +326,7 @@ def perform(provider, model, output, path, requested_effort=""):
     outcome, detail = "end", {}
     effort = requested_effort if provider in HOSTED else None
     record("begin", provider=provider, model=model, effort=effort, total=0, backend_scope=scope,
-           file=path.name, instruction=INSTRUCTION, split="dev",
+           file=path.name, instruction=INSTRUCTION, **suite.metadata(),
            **({"answer_contract": NEEDLE_CONTRACT} if provider == "kilix" and model in ("needle2", "needle3") else {}))
     monitor = threading.Thread(target=check_stop, daemon=True)
     monitor.start()
@@ -354,13 +355,13 @@ def perform(provider, model, output, path, requested_effort=""):
         # A hosted alias can resolve to a concrete deployment in the reply.
         if provider != "claude":
             identify(model)
-        contract, itemset, chat_backend = onebit()
-        questions = itemset.load(split="dev")
-        record("size", total=len(questions))
-        if not questions:
-            raise RuntimeError("OneBit contains no development questions.")
         def status(text):
             record("status", text=text)
+        contract, itemset, chat_backend = onebit()
+        questions = boolq_items(status) if suite == BOOLQ else itemset.load(split=suite.split)
+        record("size", total=len(questions))
+        if not questions:
+            raise RuntimeError(f"{suite.dataset} contains no {suite.split} questions.")
         if provider == "llama.cpp":
             try:
                 model_files = gguf_snapshot(model)
@@ -457,16 +458,16 @@ def follow(path, show=display):
     return 1 if last == "error" else 0
 
 
-def latest(folder):
+def latest(folder, suite=K12):
     try:
-        save_rankings(folder)
+        save_rankings(folder, suite)
     except (OSError, ValueError, TypeError, KeyError) as error:
         emit("storage_warning", text=f"Could not save rankings.json ({error})")
     path = max(folder.glob("*.jsonl"), default=None)
     return follow(path) if path else 0
 
 
-def start_run(provider, model, folder, effort=""):
+def start_run(provider, model, folder, effort="", suite=K12):
     if provider not in PROVIDERS or (provider not in HOSTED and not model):
         raise ValueError("Choose a provider and model.")
     if provider == "kilix" and model not in KILIX_MODELS:
@@ -518,7 +519,7 @@ def start_run(provider, model, folder, effort=""):
                                 tempfile.tempdir = str(folder.resolve())
                             signal.signal(signal.SIGTERM, interrupt)
                             signal.signal(signal.SIGHUP, interrupt)
-                            perform(provider, model, output, path, effort)
+                            perform(provider, model, output, path, effort, suite)
                         finally:
                             os._exit(0)
     return path
@@ -547,6 +548,7 @@ def interrupt(_signal, _frame):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", choices=SUITES, default=K12.key)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("models").add_argument("provider", choices=PROVIDERS)
     efforts = sub.add_parser("efforts")
@@ -580,15 +582,16 @@ def main():
             for model in models:
                 emit("model", model=model)
         else:
-            folder = args.state / "bench" / "yesno"
+            suite = SUITES[args.suite]
+            folder = suite.folder(args.state)
             if args.action == "latest":
-                return latest(folder)
+                return latest(folder, suite)
             elif args.action == "records":
                 warning = None
                 try:
-                    document = save_rankings(folder)
+                    document = save_rankings(folder, suite)
                 except (OSError, ValueError, TypeError, KeyError) as error:
-                    document = rankings_document(folder)
+                    document = rankings_document(folder, suite=suite)
                     warning = f"Could not save rankings.json ({error})"
                 for row in ranking_events(document):
                     emit(**row)
@@ -602,7 +605,7 @@ def main():
                     raise FileNotFoundError("The score is saved in rankings.json. The question journal is unavailable.")
                 return follow(path)
             else:
-                return follow(start_run(args.provider, args.model, folder, args.effort))
+                return follow(start_run(args.provider, args.model, folder, args.effort, suite))
     except KeyboardInterrupt:
         return 130
     except Exception as error:

@@ -166,11 +166,28 @@ The contract, item format, split rules, scoring and backends are in
 
 Run `bin/kilix-yesno-tui` for the interactive terminal monitor or
 `bin/kilix-yesno --help` for the CLI. Installed copies expose the same
-two commands on PATH. Both share PuzzLLM's journals and rankings under
-`~/.local/share/puzzllm/bench/yesno/`. The state directory follows
-`XDG_DATA_HOME`, `PUZZLLM_STATE`, or an explicit `--state DIR`.
+two commands on PATH. The CLI, TUI and PuzzLLM share journals and rankings
+under `~/.local/share/puzzllm/`. The state directory follows `XDG_DATA_HOME`,
+`PUZZLLM_STATE`, or an explicit `--state DIR`.
+
+| Benchmark | CLI suite | Scored questions | Results under the state directory |
+|---|---|---|---|
+| kilix-k12-computer use (yes/no) | `kilix-k12-computer-use` (default) | 442 OneBit development items | `bench/yesno/` |
+| BoolQ (YES/NO) | `boolq` | 3,270 passage-and-question validation items | `bench/boolq/validation/strict-yesno-v1/` |
+
+On the first BoolQ run, the worker downloads the SuperGLUE v2 archive,
+verifies the SHA-256 of its validation file and caches that file in
+`$XDG_CACHE_HOME/kilix-bench/boolq/` (normally `~/.cache/kilix-bench/boolq/`).
+Each request contains the passage and question. The grader maps true to
+YES and false to NO. An always-YES response scores 2,033 out of 3,270
+(62.17%). This suite grades generated replies. The standard lm-eval BoolQ
+task compares the likelihoods of the two label words.
+[BoolQ dataset](https://github.com/google-research-datasets/boolean-questions)
 
 ```sh
+bin/kilix-yesno suites
+bin/kilix-yesno --suite boolq run kilix needle3 --detach
+bin/kilix-yesno --suite boolq rankings
 bin/kilix-yesno models kilix
 bin/kilix-yesno run kilix needle3 --detach
 bin/kilix-yesno watch
@@ -185,12 +202,15 @@ Each question gets a fresh request. After surrounding whitespace is trimmed,
 only uppercase `YES` and `NO` are valid text replies. A row with any invalid
 reply is red and marked `!`. Each provider, model and reasoning effort has
 its own row. Average correct and average accuracy use finished runs. Invalid
-counts include every recorded attempt. `N+` means that some older attempts
+counts include every recorded attempt. Each suite, split and scoring protocol
+has a separate `rankings.json`. Existing OneBit runs and restored summaries
+appear under kilix-k12-computer use (yes/no). `N+` means that some older attempts
 lack a breakdown. Scores and available timings survive restoring a rankings
 file on its own. The JSONL journals hold the questions, answer keys, replies,
 native decisions, latencies and resource measurements.
 
-In the TUI press **N** to choose a provider, model and hosted effort, **B** for
+In the TUI press **D** to choose a benchmark, **N** to choose a provider,
+model and hosted effort, **B** for
 rankings, **Enter** to inspect a run, **I** for invalid replies and **C** in
 run history for CPU, GPU, RAM and timing comparisons. **Q** closes the display.
 An active run continues until completion or an explicit **S** or `stop`.

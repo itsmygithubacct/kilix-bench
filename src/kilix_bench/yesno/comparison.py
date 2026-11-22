@@ -153,7 +153,7 @@ def write_comparison(document, output):
     table = csv.writer(output, delimiter="\t", lineterminator="\n")
     table.writerow(["Provider", "Model", "Effort", "Artifact", "Machine", "Machine ID", "CPU", "GPU", "RAM",
                     "Backend", "Runs", "Finished", "Invalid", "Runs with invalid counts", "Avg correct %", "Wall-timed runs", "Mean wall s",
-                    "Mean setup s", "Questions/s", "Timed answers", "Mean s/answer"])
+                    "Mean setup s", "Questions/s", "Timed answers", "Mean s/answer", "Suite", "Split", "Protocol"])
     for model in document["models"]:
         for row in model["machine_comparisons"]:
             labels = runner_labels(row)
@@ -162,4 +162,5 @@ def write_comparison(document, output):
                             labels["ram_label"], row["backend_scope"], row["runs"], row["finished"],
                             row["invalid_answers"], row["invalid_counted_runs"], row["avg_percent"], row["wall_timed_runs"], row["mean_wall_seconds"],
                             row["mean_setup_seconds"], row["questions_per_second"],
-                            row["timed_answers"], row["mean_answer_seconds"]])
+                            row["timed_answers"], row["mean_answer_seconds"], document["suite"], document["split"],
+                            document["protocol"]])

@@ -8,11 +8,13 @@ from . import cli, worker
 from .comparison import runner_labels
 from .models import effort_options
 from .records import read_run, save_rankings
+from .suites import SUITES
 
 
 class Monitor:
-    def __init__(self, screen, folder):
-        self.screen, self.folder = screen, folder
+    def __init__(self, screen, state, suite):
+        self.screen, self.state, self.suite = screen, state, suite
+        self.folder = suite.folder(state)
         self.page, self.cursor, self.stack = "Watch", 0, []
         self.provider = self.model = self.effort = self.message = ""
         self.group, self.path, self.detail = None, None, None
@@ -45,12 +47,15 @@ class Monitor:
 
     def board(self):
         if self.cache is None or time.monotonic() >= self.refresh:
-            self.cache = save_rankings(self.folder)
+            self.cache = save_rankings(self.folder, self.suite)
             self.refresh = time.monotonic()+2
         return self.cache
 
     def content(self):
         self.entries = []
+        if self.page == "Bench":
+            self.entries = list(SUITES.values())
+            return "Enter selects   Esc back", [(suite.label, False) for suite in self.entries]
         if self.page in ("Providers", "Models", "Effort"):
             self.entries = list(worker.PROVIDERS) if self.page == "Providers" else self.models
             return "Enter selects   Esc back", [(name, False) for name in self.entries]
@@ -96,7 +101,7 @@ class Monitor:
     def draw(self):
         self.screen.erase()
         h,w = self.screen.getmaxyx()
-        self.put(0, 1, "YES / NO BENCH   "+self.page, curses.A_BOLD)
+        self.put(0, 1, self.suite.label+"   /   "+self.page, curses.A_BOLD)
         heading, rows = self.content()
         self.put(2, 2, heading, curses.A_BOLD)
         self.cursor = min(max(0,self.cursor), max(0,len(rows)-1))
@@ -110,7 +115,7 @@ class Monitor:
         if self.page == "Machines" and self.entries:
             labels = runner_labels(self.entries[self.cursor])
             self.put(h-4, 2, labels["cpu_label"]+"   "+labels["gpu_label"]+"   RAM "+labels["ram_label"])
-        controls = {"Watch":"N New run   B Rankings   I Invalid   Enter Details   S Stop",
+        controls = {"Watch":"D Bench   N New run   B Rankings   I Invalid   Enter Details   S Stop",
                     "Rankings":"Enter Runs   U Refresh   ! Invalid YES/NO reply",
                     "Runs":"Enter Answers   C Machines", "Machines":"C Runs",
                     "Answers":"I Invalid   Enter Details", "Models":"Enter Select",
@@ -121,7 +126,7 @@ class Monitor:
         self.screen.refresh()
 
     def start(self):
-        path = worker.start_run(self.provider,self.model,self.folder,self.effort)
+        path = worker.start_run(self.provider,self.model,self.folder,self.effort,self.suite)
         self.page,self.cursor,self.stack = "Watch",0,[]
         self.invalid,self.cache = False,None
         self.message = "Watching "+path.name
@@ -130,7 +135,13 @@ class Monitor:
         if not self.entries:
             return
         choice = self.entries[self.cursor]
-        if self.page == "Providers":
+        if self.page == "Bench":
+            self.suite = choice
+            self.folder = choice.folder(self.state)
+            self.page, self.cursor, self.stack = "Watch", 0, []
+            self.group = self.detail = self.path = self.cache = None
+            self.invalid = False
+        elif self.page == "Providers":
             self.provider = choice
             self.go("Models")
             self.models = []
@@ -197,6 +208,9 @@ class Monitor:
                     self.cursor += {curses.KEY_UP:-1,curses.KEY_DOWN:1,curses.KEY_PPAGE:-10,curses.KEY_NPAGE:10}[key]
                 elif key in (10,13,curses.KEY_ENTER):
                     self.enter()
+                elif self.page=="Watch" and key in (ord("d"),ord("D")):
+                    self.go("Bench")
+                    self.cursor = list(SUITES.values()).index(self.suite)
                 elif self.page=="Watch" and key in (ord("n"),ord("N")):
                     self.go("Providers")
                 elif self.page=="Watch" and key in (ord("b"),ord("B")):
@@ -216,7 +230,7 @@ class Monitor:
                 self.put(self.screen.getmaxyx()[0]-2,1,self.message); self.screen.refresh()
 
 
-def launch(folder):
+def launch(state, suite):
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("The TUI needs a terminal. Use rankings or status for pipeable output.")
-    return curses.wrapper(lambda screen: Monitor(screen,folder).run())
+    return curses.wrapper(lambda screen: Monitor(screen,state,suite).run())

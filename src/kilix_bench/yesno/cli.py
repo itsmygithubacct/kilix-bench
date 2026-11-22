@@ -8,6 +8,7 @@ from . import worker
 from .comparison import write_comparison
 from .models import effort_options, hosted_catalog
 from .records import compare_files, read_run, save_rankings
+from .suites import K12, SUITES
 
 
 def default_state():
@@ -78,9 +79,11 @@ def show_event(row):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="kilix-yesno", description="Run OneBit questions with literal YES/NO replies.")
+    p = argparse.ArgumentParser(prog="kilix-yesno", description="Run benchmarks with strict YES/NO grading.")
     p.add_argument("--state", type=Path, default=default_state(), help="game data directory (shared with PuzzLLM)")
+    p.add_argument("--suite", choices=SUITES, default=K12.key, help="benchmark dataset and standings")
     sub = p.add_subparsers(dest="action", required=True)
+    sub.add_parser("suites", help="list benchmark names and IDs")
     sub.add_parser("providers", help="list the supported providers")
     sub.add_parser("models", help="list model IDs").add_argument("provider", choices=worker.PROVIDERS)
     e = sub.add_parser("efforts", help="list a hosted model's effort levels")
@@ -102,17 +105,25 @@ def parser():
     sub.add_parser("stop", help="request a stop and keep partial answers")
     sub.add_parser("compare", help="compare machine timings as TSV").add_argument("files", type=Path, nargs="*")
     sub.add_parser("tui", help="open the interactive terminal monitor")
+    for command in sub.choices.values():
+        command.add_argument("--suite", choices=SUITES, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     return p
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
-    folder = args.state.expanduser()/"bench/yesno"
+    suite = SUITES[args.suite]
+    state = args.state.expanduser()
+    folder = suite.folder(state)
     os.umask(0o077)
     try:
         if args.action == "tui":
             from .tui import launch
-            return launch(folder)
+            return launch(state, suite)
+        if args.action == "suites":
+            for option in SUITES.values():
+                print(option.key, option.label, sep="\t")
+            return 0
         if args.action in ("providers", "models", "efforts"):
             if args.action == "providers":
                 choices = worker.PROVIDERS
@@ -123,7 +134,7 @@ def main(argv=None):
             for name in choices:
                 print(name)
         elif args.action in ("run", "watch"):
-            path = (worker.start_run(args.provider, args.model, folder, args.effort)
+            path = (worker.start_run(args.provider, args.model, folder, args.effort, suite)
                     if args.action == "run" else journal(folder))
             if path is None:
                 print("No runs recorded.")
@@ -153,9 +164,9 @@ def main(argv=None):
                         print(f'{row["n"]}  {row["question"]}  [expected {row["expected"]}]')
                         show_event(row)
         elif args.action == "compare":
-            write_comparison(compare_files(args.files) if args.files else save_rankings(folder), sys.stdout)
+            write_comparison(compare_files(args.files) if args.files else save_rankings(folder, suite), sys.stdout)
         else:
-            board = save_rankings(folder)
+            board = save_rankings(folder, suite)
             if args.action == "rankings" and args.json:
                 print(json.dumps(board, indent=2, ensure_ascii=False))
             elif args.action == "rankings":

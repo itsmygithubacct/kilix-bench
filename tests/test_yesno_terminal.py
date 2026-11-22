@@ -63,7 +63,13 @@ class TerminalTest(unittest.TestCase):
             self.assertIn(word,pending)
             pending = pending.split(word,1)[1]
         try:
-            expect(b"YES / NO BENCH")
+            expect(b"kilix-k12-computer use (yes/no)")
+            os.write(master,b"d"); expect(b"BoolQ (YES/NO)")
+            os.write(master,b"\x1bOB\r"); expect(b"BoolQ (YES/NO)"); expect(b"Watch")
+            os.write(master,b"b"); expect(b"Rankings")
+            os.write(master,b"\x1b"); expect(b"Watch")
+            os.write(master,b"d"); expect(b"kilix-k12-computer use (yes/no)")
+            os.write(master,b"\x1bOA\r"); expect(b"Watch")
             os.write(master,b"b"); expect(b"Rankings"); expect(b"example")
             os.write(master,b"\r"); expect(b"Runs"); expect(b"Journal")
             os.write(master,b"c"); expect(b"Machines")

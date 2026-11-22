@@ -10,6 +10,7 @@ import tempfile
 
 from kilix_bench.yesno.comparison import (duration, invalid_totals, machine_comparisons, normalize_measurements, runner_labels,
                                       timing_summary, usage_label)
+from kilix_bench.yesno.suites import K12, recorded_suite
 
 
 def model_id(provider, model):
@@ -35,7 +36,7 @@ def run_date(path):
         return None
 
 
-def read_run(path):
+def read_run(path, fallback_suite=K12):
     provider = model = status = ""
     effort = None
     identities = set()
@@ -44,6 +45,7 @@ def read_run(path):
     wall = setup = ended = None
     total = 0
     damaged = False
+    metadata = fallback_suite.metadata()
     with path.open("rb") as source:
         try:
             fcntl.flock(source, fcntl.LOCK_SH | fcntl.LOCK_NB)
@@ -57,6 +59,7 @@ def read_run(path):
                 event = json.loads(line)
                 kind = event["event"]
                 if kind == "begin":
+                    metadata = {k: event[k] for k in fallback_suite.metadata() if k in event}
                     backend, choice = event["provider"], event.get("model") or ""
                     if not isinstance(backend, str) or not isinstance(choice, str):
                         raise ValueError("invalid model")
@@ -99,7 +102,7 @@ def read_run(path):
     if not provider and not damaged:
         # The worker can publish the locked file just before its first write.
         return None if live else dict(provider="", model="", status="Interrupted", file=path.name,
-                                      started=run_date(path), answered=0, total=0, correct=0)
+                                      started=run_date(path), answered=0, total=0, correct=0, **metadata)
     if damaged:
         status = "Damaged"
     elif status == "Complete" and (total < 1 or len(answers) != total or max(answers, default=0) > total):
@@ -111,7 +114,7 @@ def read_run(path):
         identity = ""
     return dict(provider=provider, model=identity, effort=effort, file=path.name, started=run_date(path),
                 status=status, total=total, answered=len(answers), runner=runner, backend_scope=scope,
-                runner_usage=usage, artifact_id=artifact,
+                runner_usage=usage, artifact_id=artifact, **metadata,
                 timing=timing_summary(latencies.values(), wall, setup, ended, len(answers)),
                 correct=sum(verdict == "correct" for verdict in answers.values()),
                 wrong=sum(verdict == "wrong" for verdict in answers.values()),
@@ -122,8 +125,9 @@ def archived_runs(previous, *, restoring=True):
     # A restored rankings file can contain scores whose question journals were
     # archived separately. Merge by the original run filename on every refresh.
     runs = {}
-    if previous.get("benchmark") != "OneBit" or previous.get("split") != "dev":
-        raise ValueError("Unknown benchmark")
+    suite = recorded_suite(previous)
+    if previous.get("benchmark") != suite.dataset or previous.get("split") != suite.split:
+        raise ValueError("Missing benchmark or split")
     for group in previous["models"]:
         provider, model = group["provider"] or "", group["model"] or ""
         if not isinstance(provider, str) or not isinstance(model, str):
@@ -131,6 +135,8 @@ def archived_runs(previous, *, restoring=True):
         for entry in group["history"]:
             selected = entry.get("model_path") if provider == "llama.cpp" else None
             run = dict(entry, provider=provider, model=selected if isinstance(selected, str) and selected else model)
+            if any(k in run and run[k] != v for k, v in suite.metadata().items()):
+                raise ValueError("Run metadata conflicts with its standings")
             run["effort"] = entry.get("effort") or group.get("effort")
             if run["effort"] is not None and not isinstance(run["effort"], str):
                 raise ValueError("Invalid reasoning effort")
@@ -156,20 +162,22 @@ def archived_runs(previous, *, restoring=True):
     return runs
 
 
-def rankings_document(folder, runs=None):
+def rankings_document(folder, runs=None, suite=K12):
     if runs is None:
         runs = {}
     for path in folder.glob("*.jsonl"):
         if not path.is_file() or path.is_symlink():
             continue
         try:
-            run = read_run(path)
+            run = read_run(path, suite)
         except FileNotFoundError:
             continue
         except OSError:
             run = dict(provider="", model="", file=path.name, started=run_date(path),
-                       status="Unreadable", total=0, answered=0, correct=0)
+                       status="Unreadable", total=0, answered=0, correct=0, **suite.metadata())
         if run is None:
+            continue
+        if not suite.matches(run):
             continue
         saved = runs.get(path.name)
         if saved and saved["status"] == "Complete":
@@ -188,10 +196,10 @@ def rankings_document(folder, runs=None):
                         for key in ("timed_answers", "answer_seconds", "mean_answer_seconds", "p95_answer_seconds"):
                             run["timing"][key] = old_timing.get(key)
         runs[path.name] = dict(run, journal_available=run["status"] not in ("Damaged", "Unreadable"))
-    return summarize_runs(runs)
+    return summarize_runs(runs, suite)
 
 
-def summarize_runs(runs):
+def summarize_runs(runs, suite=K12):
     # Keep the original path in each journal. A measured content digest also
     # recognizes an identical GGUF installed under different paths.
     artifacts = defaultdict(set)
@@ -233,7 +241,7 @@ def summarize_runs(runs):
                            avg_percent=float(accuracy * 100) if count else None, history=attempts,
                            artifact_id=group_id if group_id != model else None,
                            machine_comparisons=machine_comparisons(attempts)))
-    return dict(schema_version=3, benchmark="OneBit", split="dev", total_runs=len(runs), models=models)
+    return dict(schema_version=3, **suite.metadata(), total_runs=len(runs), models=models)
 
 
 def ranking_events(document):
@@ -270,10 +278,15 @@ def compare_files(paths):
                 row.get("effort") is not None, row["invalid"] is not None, bool(row.get("runner")), row["timing"]["timed_answers"])
 
     runs = {}
+    suite = None
     for path in paths:
         document = json.loads(path.read_bytes())
         if not isinstance(document, dict) or document.get("schema_version") not in (1, 2, 3):
             raise ValueError(f"Unrecognized rankings format in {path.name}.")
+        source = recorded_suite(document)
+        if suite is not None and suite != source:
+            raise ValueError("Choose rankings from the same suite, split and scoring protocol.")
+        suite = source
         for name, run in archived_runs(document, restoring=False).items():
             normalize_measurements(run)
             old = runs.get(name)
@@ -302,10 +315,10 @@ def compare_files(paths):
                     if best["timing"].get(key) is None:
                         best["timing"][key] = other["timing"].get(key)
             runs[name] = best
-    return summarize_runs(runs)
+    return summarize_runs(runs, suite or K12)
 
 
-def save_rankings(folder):
+def save_rankings(folder, suite=K12):
     """Publish one complete UTF-8 snapshot, serialized with other writers."""
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     target = folder / "rankings.json"
@@ -325,11 +338,13 @@ def save_rankings(folder):
             else:
                 if not isinstance(previous, dict) or previous.get("schema_version") not in (1, 2, 3):
                     raise ValueError("Unrecognized rankings.json format. Its original contents have been preserved.")
+                if recorded_suite(previous) != suite:
+                    raise ValueError("The saved standings belong to a different benchmark.")
                 try:
                     runs = archived_runs(previous)
                 except (ValueError, KeyError, TypeError):
                     damaged = True
-        document = rankings_document(folder, runs)
+        document = rankings_document(folder, runs, suite)
         if damaged:
             if not document["total_runs"]:
                 raise ValueError("Cannot rebuild rankings.json without run journals. Its contents have been preserved.")
