@@ -62,12 +62,15 @@ def collect(job, expected):
     scores = {}
     for path in job.glob("*/result.json"):
         trial = json.loads(path.read_text())
-        name = trial["task_name"]
+        name = trial["task_name"].removeprefix("terminal-bench/")
+        if name not in expected or name in scores:
+            raise ValueError(f"Unexpected or duplicate Harbor trial for {name}. See {path}")
         rewards = (trial.get("verifier_result") or {}).get("rewards") or {}
         reward = rewards.get("reward")
-        if (name in scores or not trial.get("reward_valid") or not isinstance(reward, (int, float))
+        if (not trial.get("finished_at") or not trial.get("reward_valid") or type(reward) not in (int, float)
                 or not math.isfinite(reward) or not 0 <= reward <= 1):
-            raise ValueError(f"No unique, valid verifier reward for {name}. See {path}")
+            reason = (trial.get("exception_info") or {}).get("exception_type") or "no valid verifier reward"
+            raise ValueError(f"Harbor could not score {name} ({reason}). See {path}")
         scores[name] = reward
     if set(scores) != set(expected):
         raise ValueError(f"Harbor returned {len(scores)}/{len(expected)} expected task results. See {job}")
@@ -97,6 +100,7 @@ def run_job(model, endpoint, output, selected, status=print, context_length=None
         if not 0 < tokens < context_length:
             raise ValueError("The output token budget must be smaller than the context size.")
         options["model_info"] = {"max_input_tokens": context_length - tokens, "max_output_tokens": tokens}
+        options["llm_kwargs"] = {"max_tokens": tokens}
         options["proactive_summarization_threshold"] = min(2048, (context_length - tokens) // 4)
     elif max_tokens:
         raise ValueError("Specify a context size with the output token budget.")
@@ -117,7 +121,16 @@ def run_job(model, endpoint, output, selected, status=print, context_length=None
         proc = subprocess.Popen([*launcher, "run", "--config", str(config_path)], env=env,
                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            rc = proc.wait()
+            completed = 0
+            while True:
+                try:
+                    rc = proc.wait(timeout=5)
+                    break
+                except subprocess.TimeoutExpired:
+                    count = sum(1 for _ in (run / "trials").glob("*/result.json"))
+                    if count != completed:
+                        status(f"Terminal-Bench engineering | {count}/{len(selected)} trials finished")
+                        completed = count
         finally:
             if proc.poll() is None:
                 try:
@@ -134,6 +147,10 @@ def run_job(model, endpoint, output, selected, status=print, context_length=None
     return run
 
 
+def interrupt(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 def cli(parser, argv):
     parser.add_argument("--model", help="Harbor provider/model, or the served model ID with --endpoint")
     parser.add_argument("--endpoint", help="OpenAI-compatible local server base URL")
@@ -144,9 +161,12 @@ def cli(parser, argv):
     parser.add_argument("--max-tokens", type=positive, help="output budget within that context")
     args = parser.parse_args(argv)
     selected = list(dict.fromkeys(args.task or TASKS))[:args.limit]
+    previous = signal.signal(signal.SIGTERM, interrupt)
     try:
         run_job(args.model, args.endpoint, args.output, selected,
                 context_length=args.context_length, max_tokens=args.max_tokens)
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     return 0

@@ -38,14 +38,18 @@ class CodingSuites(unittest.TestCase):
             (job / "result.json").write_text(json.dumps({"finished_at": "done"}))
             trial = job / "trial-1"
             trial.mkdir()
-            row = {"task_name": "fix-git", "reward_valid": True, "verifier_result": {"rewards": {"reward": 0}}}
+            row = {"task_name": "terminal-bench/fix-git", "finished_at": "done", "reward_valid": True,
+                   "verifier_result": {"rewards": {"reward": 0}}}
             (trial / "result.json").write_text(json.dumps(row))
             self.assertEqual(terminal_bench.collect(job, ["fix-git"]), {"fix-git": 0})
             with self.assertRaises(ValueError):
                 terminal_bench.collect(job, ["fix-git", "log-summary-date-ranges"])
+            with self.assertRaisesRegex(ValueError, "Unexpected"):
+                terminal_bench.collect(job, ["log-summary-date-ranges"])
             row["reward_valid"] = False
+            row["exception_info"] = {"exception_type": "DockerError"}
             (trial / "result.json").write_text(json.dumps(row))
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "DockerError"):
                 terminal_bench.collect(job, ["fix-git"])
 
     @patch("kilix_bench.terminal_bench.run_job")
