@@ -52,8 +52,6 @@ if __name__ == "__main__":
         from evalplus.gen.util import trusted_exec
         multiprocessing.set_start_method("fork")
         os.register_at_fork(after_in_child=isolate_candidate)
-    else:
-        resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
     if doc is None:  # Runtime/dependency check before generating any answers.
         sys.exit(0)
     for limit, value in ((resource.RLIMIT_CPU, 120 if task == "humaneval" else 20), (resource.RLIMIT_AS, 1024 ** 3),
