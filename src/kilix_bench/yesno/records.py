@@ -10,13 +10,17 @@ import tempfile
 
 from kilix_bench.yesno.comparison import (duration, invalid_totals, machine_comparisons, normalize_measurements, runner_labels,
                                       timing_summary, usage_label)
+from kilix_bench.yesno.diffusion import PROVIDER as DIFFUSION
 from kilix_bench.yesno.suites import K12, recorded_suite
+
+# Providers whose model is a GGUF file path, grouped by content digest.
+GGUF_PROVIDERS = ("llama.cpp", DIFFUSION)
 
 
 def model_id(provider, model):
     if not model:
         return ""
-    if provider == "llama.cpp":
+    if provider in GGUF_PROVIDERS:
         try:
             return str(Path(model).expanduser().resolve())
         except (OSError, RuntimeError, ValueError):
@@ -133,7 +137,7 @@ def archived_runs(previous, *, restoring=True):
         if not isinstance(provider, str) or not isinstance(model, str):
             raise ValueError("Invalid model identity")
         for entry in group["history"]:
-            selected = entry.get("model_path") if provider == "llama.cpp" else None
+            selected = entry.get("model_path") if provider in GGUF_PROVIDERS else None
             run = dict(entry, provider=provider, model=selected if isinstance(selected, str) and selected else model)
             if any(k in run and run[k] != v for k, v in suite.metadata().items()):
                 raise ValueError("Run metadata conflicts with its standings")
@@ -205,23 +209,23 @@ def summarize_runs(runs, suite=K12):
     artifacts = defaultdict(set)
     for run in runs.values():
         normalize_measurements(run)
-        if run["provider"] == "llama.cpp" and run.get("artifact_id"):
-            artifacts[run["model"]].add(run["artifact_id"])
+        if run["provider"] in GGUF_PROVIDERS and run.get("artifact_id"):
+            artifacts[run["provider"], run["model"]].add(run["artifact_id"])
     by_model = defaultdict(list)
     for name in sorted(runs, reverse=True):
         run = dict(runs[name])
         provider, model = run.pop("provider"), run.pop("model")
         group_id = model
-        if provider == "llama.cpp":
+        if provider in GGUF_PROVIDERS:
             run["model_path"] = model
             if run.get("artifact_id"):
                 group_id = run["artifact_id"]
-            elif len(artifacts[model]) == 1:
-                group_id = next(iter(artifacts[model]))
+            elif len(artifacts[provider, model]) == 1:
+                group_id = next(iter(artifacts[provider, model]))
         by_model[provider, group_id, run.get("effort")].append(run)
     groups = []
     for (provider, group_id, effort), attempts in by_model.items():
-        model = min(r["model_path"] for r in attempts) if provider == "llama.cpp" else group_id
+        model = min(r["model_path"] for r in attempts) if provider in GGUF_PROVIDERS else group_id
         complete = [r for r in attempts if r["status"] == "Complete"]
         count = len(complete)
         mean = Fraction(sum(r["correct"] for r in complete), count) if count else None

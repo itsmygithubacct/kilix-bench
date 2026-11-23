@@ -234,6 +234,24 @@ contract version. When Needle2 cuts a UTF-8 character in its explanation,
 the bench can still read an intact vote and saves the original response bytes.
 LFM2 receives the same text instruction as other chat models.
 
+The **llama.cpp-diffusion** provider runs text diffusion models, which
+llama-server cannot load. It supports the LLaDA, LLaDA-MoE, Dream and RND1
+GGUF architectures. Each question is one `llama-diffusion-cli` run, with the
+instruction as the system prompt and the question in a prompt file. The reply
+is read from the unprefixed log file that llama.cpp writes, because GPU
+drivers can add messages to stderr. The
+sequence holds the prompt plus a 32-token reply, which is denoised in 32 steps
+at temperature 0 with seed 0. The sampling algorithm comes from the GGUF
+architecture: confidence for LLaDA and entropy for Dream and RND1. A sibling
+`llama-tokenize` sizes the prompt exactly. Without it the UTF-8 byte count
+is used as an upper bound. The CLI lists the GGUF files under
+`$PUZZLLM_DIFFUSION_MODELS`, which defaults to
+`$XDG_DATA_HOME/puzzllm/diffusion/`. The tool is `$PUZZLLM_DIFFUSION_CLI`,
+`llama-diffusion-cli` on PATH or the newest
+`llama-*/llama-diffusion-cli` in that folder.
+`PUZZLLM_DIFFUSION_DEVICE` or `PUZZLLM_GPU` selects the llama.cpp device,
+for example `Vulkan1`. A run that exceeds 900 seconds on one question fails.
+
 Each Needle2 question gets a fresh inference process with a 256-token response
 budget. The bench uses the selected tuned weights when configured, or the
 installed stock executable otherwise. Both receive the original question and

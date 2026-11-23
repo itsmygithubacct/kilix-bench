@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import struct
 import tempfile
 import threading
 import time
@@ -19,7 +20,7 @@ from unittest.mock import patch
 PROJECT = Path(__file__).resolve().parents[1]
 WORKER = PROJECT / "bin/kilix-yesno-worker"
 sys.path.insert(0, str(PROJECT/"src"))
-from kilix_bench.yesno import machine, worker
+from kilix_bench.yesno import diffusion, machine, worker
 from kilix_bench.yesno.models import gguf_artifact, gguf_snapshot
 
 QUESTIONS = [
@@ -33,6 +34,47 @@ QUESTIONS = [
 
 def rows(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def gguf_header(arch):
+    """A metadata-only GGUF with arrays and scalars ahead of the architecture."""
+    def text(value):
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+    pairs = [text("general.alignment") + struct.pack("<II", 4, 32),
+             text("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, 2) + text("a") + text("bc"),
+             text("tokenizer.ggml.scores") + struct.pack("<IIQ", 9, 6, 3) + struct.pack("<3f", 0, 1, 2),
+             text("general.architecture") + struct.pack("<I", 8) + text(arch)]
+    return b"GGUF" + struct.pack("<IQQ", 3, 0, len(pairs)) + b"".join(pairs)
+
+
+FAKE_DIFFUSION = """#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+prompt = open(args[args.index('-f')+1]).read()
+with open(os.environ['BENCH_CALLS'], 'a') as out:
+    print(json.dumps(['diffusion', args, prompt, os.environ.get('LD_LIBRARY_PATH', '')]), file=out)
+# Like llama.cpp: entries get a timestamp prefix unless disabled, and go to
+# stderr and the --log-file. The GPU driver writes to stderr only.
+prefix = '' if '--no-log-prefix' in args else '0.05.630.887 I '
+log = open(args[args.index('--log-file')+1], 'w') if '--log-file' in args else None
+def entry(text):
+    for stream in filter(None, (sys.stderr, log)):
+        stream.write(prefix + text)
+if os.environ.get('BENCH_DIFFUSION_FAIL'):
+    entry('error: failed to load model\\n')
+    sys.exit(1)
+if 'two even' in prompt: reply = 'YES'
+elif 'light' in prompt: reply = 'YES'
+elif 'none' in prompt: reply = 'NO, because...'
+else: reply = 'NO'
+print('unrelated progress on stdout')
+entry('load_tensors: offloaded 17/17 layers\\n')
+entry('\\rdiffusion step: 31/32 [====] 96%')
+entry('\\ntotal time: 5.00ms, time per step: 0.16ms\\n')
+entry('\\n' + reply + '\\n')
+sys.stderr.write('NVVM compilation failed: 3\\n')
+"""
 
 
 class BenchTest(unittest.TestCase):
@@ -633,6 +675,83 @@ else:
         answers = [r for r in rows(self.reports()[0]) if r["event"] == "answer"]
         self.assertEqual([r["verdict"] for r in answers], ["correct"]*3 + ["invalid"])
         self.assertEqual([r["decision"]["answer"]["noul"] for r in answers], [0.9, 0.1, 0.5, "bad"])
+
+
+    def test_diffusion_models_answer_through_llama_diffusion_cli(self):
+        models = self.root/"diffusion"
+        tools = models/"llama-b1"
+        tools.mkdir(parents=True)
+        llada = models/"tiny llada.gguf"
+        llada.write_bytes(gguf_header("llada-moe"))
+        chat = models/"chat.gguf"
+        chat.write_bytes(gguf_header("qwen3"))
+        (models/"partial.gguf.part").write_bytes(b"incomplete")
+        cli = tools/"llama-diffusion-cli"
+        cli.write_text(FAKE_DIFFUSION)
+        counter = tools/"llama-tokenize"
+        counter.write_text("#!/bin/sh\necho 'unrelated'\necho 'Total number of tokens: 7'\n")
+        for tool in (cli, counter):
+            tool.chmod(0o700)
+        self.env.update(PUZZLLM_DIFFUSION_MODELS=str(models), PUZZLLM_GPU="Vulkan9", PATH="/usr/bin:/bin")
+        self.assertEqual([r["model"] for r in self.result("models", "llama.cpp-diffusion")],
+                         [str(chat), str(llada)])
+        self.result("run", self.state, "llama.cpp-diffusion", str(tools/".."/llada.name))
+        journal, = self.reports()
+        events = rows(journal)
+        self.assertEqual(events[0]["backend_scope"], "local llama.cpp diffusion")
+        self.assertEqual([e["verdict"] for e in events if e["event"] == "answer"],
+                         ["correct", "wrong", "invalid", "correct"])
+        calls = [row for row in rows(self.log) if row[0] == "diffusion"]
+        self.assertEqual([prompt for _, _, prompt, _ in calls],
+                         [q.get("context", "") + "\n" + q["prompt"] for q in QUESTIONS])
+        for _, args, _, libraries in calls:
+            option = lambda name: args[args.index(name)+1]
+            self.assertEqual(option("-sys"), worker.INSTRUCTION)
+            self.assertEqual([option(o) for o in ("-c", "-b", "-ub")], ["103"]*3)
+            self.assertEqual((option("--diffusion-steps"), option("--diffusion-algorithm"), option("--temp"),
+                              option("--device"), option("-m")), ("32", "4", "0", "Vulkan9", str(llada.resolve())))
+            self.assertEqual(libraries.split(os.pathsep)[0], str(tools))
+            self.assertIn("--no-log-prefix", args)
+            self.assertIn("--no-log-timestamps", args)
+        board = [r for r in self.result("records", self.state) if r["event"] == "standing"]
+        self.assertEqual([(r["provider"], r["model"], r["runs"]) for r in board],
+                         [("llama.cpp-diffusion", str(llada.resolve()), 1)])
+        done = len(calls)
+        failed = subprocess.run([WORKER, "run", self.state, "llama.cpp-diffusion", str(chat)], env=self.env,
+                                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10)
+        self.assertIn("llama-diffusion-cli runs dream, llada, llada-moe, rnd1 models",
+                      [json.loads(line) for line in failed.stdout.splitlines()][-1]["text"])
+        self.env["BENCH_DIFFUSION_FAIL"] = "1"
+        failed = subprocess.run([WORKER, "run", self.state, "llama.cpp-diffusion", str(llada)], env=self.env,
+                                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10)
+        last = [json.loads(line) for line in failed.stdout.splitlines()][-1]
+        self.assertEqual((last["event"], last["text"]),
+                         ("error", "llama-diffusion-cli exited 1. error: failed to load model"))
+        self.assertEqual(len([row for row in rows(self.log) if row[0] == "diffusion"]), done + 1)
+        counter.unlink()
+        scratch = self.root/"scratch"
+        scratch.mkdir()
+        self.env.pop("BENCH_DIFFUSION_FAIL")
+        with patch.dict(os.environ, self.env, clear=True):
+            with diffusion.diffusion_answerer(str(llada), "Rule", scratch, lambda _text: None) as ask:
+                self.assertEqual(ask("caf\u00e9?"), "NO")
+        args = rows(self.log)[-1][1]
+        self.assertEqual(args[args.index("-ub")+1], str(len("Rule\ncaf\u00e9?".encode()) + 96))
+
+    def test_diffusion_log_and_gguf_parsing(self):
+        log = "load\ntotal time: 1ms, time per step: 1ms\n\nYES\n"
+        self.assertEqual(diffusion.reply_text(log), "YES")
+        self.assertEqual(diffusion.reply_text("total time missing\nYES\n"), None)
+        path = self.root/"model.gguf"
+        for arch in ("llada", "dream", "rnd1"):
+            path.write_bytes(gguf_header(arch))
+            self.assertEqual(diffusion.architecture(path), arch)
+        path.write_bytes(b"GGML" + gguf_header("llada")[4:])
+        with self.assertRaises(ValueError):
+            diffusion.architecture(path)
+        path.write_bytes(gguf_header("llada")[:-3])
+        with self.assertRaises(ValueError):
+            diffusion.architecture(path)
 
     def test_local_catalogs_include_installed_tags_and_nested_ggufs(self):
         posts, prompts = [], []

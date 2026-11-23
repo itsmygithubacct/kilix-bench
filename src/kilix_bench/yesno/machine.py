@@ -135,6 +135,8 @@ def backend_scope(provider, url=None):
         return "local Kilix"
     if provider == "llama.cpp":
         return "local llama.cpp"
+    if provider == "llama.cpp-diffusion":
+        return "local llama.cpp diffusion"
     if provider == "ollama":
         url = url or "127.0.0.1"
         try:

@@ -21,17 +21,18 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import uuid
 
+from kilix_bench.yesno import diffusion
 from kilix_bench.yesno.comparison import write_comparison
 from kilix_bench.yesno.local import KILIX_MODELS, NEEDLE_CONTRACT, NativeReply, decision_reply, kilix_answerer
 from kilix_bench.yesno.machine import RunnerMonitor, backend_scope
 from kilix_bench.yesno.models import effort_options, executable, gguf_artifact, gguf_snapshot, hosted_catalog, stop_child
-from kilix_bench.yesno.records import compare_files, model_id, ranking_events, rankings_document, save_rankings
+from kilix_bench.yesno.records import GGUF_PROVIDERS, compare_files, model_id, ranking_events, rankings_document, save_rankings
 from kilix_bench.yesno.suites import BOOLQ, K12, SUITES, boolq_items
 
 INSTRUCTION = "Respond with only YES or NO."
 HOSTED = ("codex", "grok", "claude")
 HOSTED_TIMEOUTS = (180, 360)
-PROVIDERS = ("ollama", "llama.cpp", *HOSTED, "kilix")
+PROVIDERS = ("ollama", "llama.cpp", *HOSTED, "kilix", diffusion.PROVIDER)
 
 
 def emit(event, **fields):
@@ -56,6 +57,8 @@ def request(url, body=None, timeout=5):
 def local_models(provider):
     if provider == "kilix":
         return list(KILIX_MODELS)
+    if provider == diffusion.PROVIDER:
+        return diffusion.local_models()
     if provider == "ollama":
         with request(ollama_url() + "/api/tags") as response:
             return sorted({entry["name"] for entry in json.load(response)["models"]})
@@ -255,6 +258,9 @@ def answerer(provider, model, scratch, chat_backend, status, identify=None, effo
         with llama_server(model, scratch, status) as (url, alias):
             backend = chat_backend(url, alias, flavor="llama-server", max_tokens=256, logprobs=False)
             yield lambda question, **_: backend.ask(messages(question), "raw").get("reply") or ""
+    elif provider == diffusion.PROVIDER:
+        with diffusion.diffusion_answerer(model, INSTRUCTION, scratch, status) as ask:
+            yield ask
     else:
         def resolved(name):
             nonlocal model
@@ -362,7 +368,7 @@ def perform(provider, model, output, path, requested_effort="", suite=K12):
         record("size", total=len(questions))
         if not questions:
             raise RuntimeError(f"{suite.dataset} contains no {suite.split} questions.")
-        if provider == "llama.cpp":
+        if provider in GGUF_PROVIDERS:
             try:
                 model_files = gguf_snapshot(model)
             except (OSError, RuntimeError, ValueError):
