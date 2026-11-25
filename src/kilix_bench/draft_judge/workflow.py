@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -147,10 +148,41 @@ def is_d3(path):
 
 def error_text(exc):
     if isinstance(exc, urllib.error.HTTPError):
+        detail = _http_detail(exc)
+        if detail:
+            return f"HTTP {exc.code}: {detail}"
         return f"HTTP {exc.code}"
     if isinstance(exc, urllib.error.URLError):
         return str(exc.reason)
     return str(exc)
+
+
+def _http_detail(exc):
+    """A short message from an HTTP error body, when the server sent one."""
+    try:
+        raw = exc.read()
+    except Exception:
+        return ""
+    if isinstance(raw, bytes):
+        raw = raw.decode(errors="replace")
+    raw = raw.strip()
+    if not raw:
+        return ""
+    message = raw
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        err = parsed.get("error", parsed)
+        if isinstance(err, dict):
+            message = err.get("message") or err.get("msg") or raw
+        elif isinstance(err, str) and err:
+            message = err
+    message = " ".join(str(message).split())
+    if len(message) > 300:
+        message = message[:297] + "..."
+    return message
 
 
 def post_json(url, body, timeout):
@@ -178,6 +210,44 @@ def yes_probability(payload):
 
 def noul_score(payload, key):
     return float(payload["answers"][key]["noul"])
+
+
+def warn(message):
+    sys.stderr.write(f"draft-judge: {message}\n")
+    sys.stderr.flush()
+
+
+def note(message):
+    """Progress for an interactive run. Captured output stays a report only."""
+    if sys.stderr.isatty():
+        warn(message)
+
+
+def model_files_ready(specs):
+    missing = [spec.path for spec in specs if not Path(spec.path).is_file()]
+    for path in missing:
+        warn(f"model file not found: {path}")
+    return not missing
+
+
+def log_excerpt(path):
+    """The last server error lines, without the llama.cpp timestamp."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    errors = [line for line in lines if " E " in line or "error" in line.casefold()]
+    picked = errors[-2:] or lines[-2:]
+    cleaned = []
+    for line in picked:
+        if " E " in line:
+            line = line.split(" E ", 1)[1]
+        cleaned.append(line)
+    excerpt = " | ".join(cleaned)
+    if len(excerpt) > 300:
+        excerpt = excerpt[:297] + "..."
+    return excerpt
 
 
 def free_port(avoid):
@@ -309,6 +379,7 @@ class Server:
         return f"http://127.0.0.1:{self.port}"
 
     def launch(self, log_path):
+        self.log_path = log_path
         self.log = open(log_path, "w", encoding="utf-8")
         try:
             self.proc = subprocess.Popen(
@@ -319,6 +390,9 @@ class Server:
             self._wait_ready()
         except Exception as exc:
             self.error = error_text(exc)
+            excerpt = log_excerpt(log_path)
+            if excerpt and excerpt not in self.error:
+                self.error = f"{self.error}: {excerpt}"
             self.stop()
 
     def _wait_ready(self):
@@ -399,12 +473,16 @@ class Fleet:
         return self._picked
 
     def _command(self, spec, port):
+        # d3 scores a whole reply in one physical batch. The server default
+        # is 512, which is smaller than a full draft, so the batch matches
+        # the context.
+        batch = ["-b", str(CONTEXT), "-ub", str(CONTEXT)] if is_d3(spec.path) else []
         return [
             self.binary, "-m", spec.path,
             "--jinja", "--reasoning", "off",
             "-fa", "on",
             "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
-            "-c", str(CONTEXT), "-np", "1",
+            "-c", str(CONTEXT), *batch, "-np", "1",
             "--host", "127.0.0.1", "--port", str(port),
             *self._device_flags(spec),
         ]
@@ -543,23 +621,35 @@ def choose_winner(drafts, judges):
     return winner
 
 
+def score_line(draft, judged):
+    if draft["ok"] and judged and judged["ok"]:
+        detail = f"score {judged['score']:.3f}"
+    elif not draft["ok"]:
+        detail = "skipped"
+        if draft.get("error"):
+            detail = f"skipped: {draft['error']}"
+    else:
+        detail = "judge error"
+        if judged and judged.get("error"):
+            detail = f"judge error: {judged['error']}"
+    return f"draft {draft['index']}  {draft['model']}  temp {draft['temp']:g}  {detail}"
+
+
 def render_report(vanilla, drafts, judges, winner):
-    lines = ["vanilla", vanilla.get("text") or "", ""]
+    if winner is None:
+        head = "result: no reply could be judged"
+    else:
+        head = (
+            f"result: draft {winner[1]['index']}  {winner[1]['model']}  "
+            f"score {winner[0]['score']:.3f}"
+        )
     by_index = {row["index"]: row for row in judges}
+    lines = [head, ""]
     for draft in drafts:
-        judged = by_index.get(draft["index"])
-        if draft["ok"] and judged and judged["ok"]:
-            detail = f"score {judged['score']:.3f}"
-        elif not draft["ok"]:
-            detail = "skipped"
-            if draft.get("error"):
-                detail = f"skipped: {draft['error']}"
-        else:
-            detail = "error"
-            if judged and judged.get("error"):
-                detail = f"error: {judged['error']}"
-        lines.append(
-            f"draft {draft['index']}  {draft['model']}  temp {draft['temp']:g}  {detail}")
+        lines.append(score_line(draft, by_index.get(draft["index"])))
+    lines.append("")
+    lines.append("vanilla")
+    lines.append(vanilla.get("text") or "")
     lines.append("")
     lines.append("chosen")
     if winner is None:
@@ -568,6 +658,10 @@ def render_report(vanilla, drafts, judges, winner):
         lines.append(winner[1]["text"] or "")
     lines.append("")
     return "\n".join(lines)
+
+
+def render_load_failure(spec, error):
+    return f"result: judge failed to load\njudge: {spec.name}\n{error}\n"
 
 
 def _append(path, row):
@@ -581,6 +675,9 @@ def _write_json(path, obj):
 
 def execute(config):
     """Run the workflow. Return (exit code, run directory, report text)."""
+    specs = [*config["draft_models"], config["judge"]]
+    if not model_files_ready(specs):
+        return 2, None, ""
     directory = Path(config["output"]) if config.get("output") else default_output()
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
@@ -608,23 +705,39 @@ def execute(config):
         })
         sampler.start()
         if config["schedule"] == "together":
+            note("loading models")
             sampler.set_phase("load")
             fleet.start_all([*config["draft_models"], config["judge"]])
+            with fleet.lock:
+                judge_server = fleet.live.get(config["judge"].key)
+            if judge_server is not None and judge_server.error:
+                warn(f"judge failed to load: {judge_server.error}")
+                report = render_load_failure(config["judge"], judge_server.error)
+                (directory / "report.txt").write_text(report, encoding="utf-8")
+                _write_json(directory / "timing.json", timing)
+                return 1, directory, report
 
         sampler.set_phase("vanilla")
+        note("writing the vanilla reply")
         mark = time.perf_counter()
         server = fleet.acquire(config["draft_models"][0])
         vanilla = one_generation(server, config["prompt"], config["code"], 0.0, SEED)
         timing["vanilla"] = round(time.perf_counter() - mark, 3)
         (directory / "vanilla.txt").write_text(vanilla.get("text") or "", encoding="utf-8")
         _write_json(directory / "vanilla.json", vanilla)
+        if vanilla["ok"]:
+            note(f"vanilla  {vanilla['tokens']} tokens  {vanilla['seconds']}s")
+        else:
+            warn(f"vanilla failed: {vanilla['error']}")
 
         sampler.set_phase("drafts")
         mark = time.perf_counter()
         models = config["draft_models"]
-        for index in range(config["draft_count"]):
+        count = config["draft_count"]
+        for index in range(count):
             spec = models[index % len(models)]
             temperature = 0.0 if index == 0 else SAMPLE_TEMPERATURE
+            note(f"writing draft {index + 1} of {count}  {spec.name}")
             server = fleet.acquire(spec)
             generated = one_generation(
                 server, config["prompt"], config["code"], temperature, SEED + index)
@@ -640,20 +753,39 @@ def execute(config):
             }
             drafts.append(row)
             _append(drafts_path, row)
+            if generated["ok"]:
+                note(
+                    f"draft {index + 1} of {count}  {generated['tokens']} tokens  "
+                    f"{generated['seconds']}s")
+            else:
+                warn(f"draft {index + 1} of {count} failed: {generated['error']}")
         timing["drafts"] = round(time.perf_counter() - mark, 3)
 
         sampler.set_phase("judge")
+        note("judging")
         mark = time.perf_counter()
         judge_server = fleet.acquire(config["judge"])
+        if judge_server.error:
+            warn(f"judge failed to load: {judge_server.error}")
         for draft in drafts:
             if not draft["ok"]:
                 continue
             judged = one_judge(judge_server, config["prompt"], draft["text"], draft["index"])
             judges.append(judged)
             _append(judge_path, judged)
+            if judged["ok"]:
+                note(f"draft {draft['index']}  score {judged['score']:.3f}  {judged['seconds']}s")
+            else:
+                warn(f"draft {draft['index']}  judge error: {judged['error']}")
         timing["judge"] = round(time.perf_counter() - mark, 3)
 
         winner = choose_winner(drafts, judges)
+        if winner is None:
+            note("result: no reply could be judged")
+        else:
+            note(
+                f"result: draft {winner[1]['index']}  "
+                f"score {winner[0]['score']:.3f}")
         report = render_report(vanilla, drafts, judges, winner)
         (directory / "report.txt").write_text(report, encoding="utf-8")
         _write_json(directory / "timing.json", timing)

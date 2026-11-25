@@ -15,7 +15,7 @@ from unittest.mock import patch
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "src"))
 
-from kilix_bench.draft_judge import cli, workflow
+from kilix_bench.draft_judge import cli, tui, workflow
 
 
 QUESTION = "Is this reply fully correct?\n\n"
@@ -25,6 +25,16 @@ DEVICES = """Available devices:
   Vulkan2: Microsoft Basic Render Driver (1 MiB, 1 MiB free)
   Vulkan3: Quadro RTX 3000 (1 MiB, 1 MiB free)
 """
+
+
+def materialize(spec):
+    path = spec
+    if path.endswith(":cpu") or path.endswith(":gpu"):
+        path = path.rsplit(":", 1)[0]
+    file = Path(path)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    if not file.exists():
+        file.write_bytes(b"gguf")
 
 
 def rows(path):
@@ -96,11 +106,12 @@ class FakeProc:
 class Runtime:
     """Stand-in for llama-server processes and their HTTP API."""
 
-    def __init__(self, replies, scores=None, fail=(), devices=None):
+    def __init__(self, replies, scores=None, fail=(), devices=None, die=()):
         self.replies = list(replies)
         self.scores = dict(scores or {})
         self.fail = set(fail)
         self.devices = devices
+        self.die = {name.casefold() for name in die}
         self.events = []
         self.gens = []
         self.judges = []
@@ -134,7 +145,10 @@ class Runtime:
         model = Path(cmd[cmd.index("-m") + 1]).name
         self.port_model[str(port)] = model
         self.events.append(("start", cmd))
-        return FakeProc(cmd, self)
+        proc = FakeProc(cmd, self)
+        if model.casefold() in self.die:
+            proc.returncode = 1
+        return proc
 
     def urlopen(self, request, timeout=None):
         url = request if isinstance(request, str) else request.full_url
@@ -232,6 +246,8 @@ class DraftJudgeTest(unittest.TestCase):
     def command(self, tmp, drafts, judge, prompt="Say hello", drafts_n=None, schedule=None,
                 code=False, gpu_device=None, prompt_file=None):
         out = Path(tmp) / "out"
+        for item in [*drafts, judge]:
+            materialize(item)
         argv = ["run", "--judge", judge, "--output", str(out), "--llama-server", "/fake/llama-server"]
         for item in drafts:
             argv.extend(["--draft", item])
@@ -390,6 +406,16 @@ class DraftJudgeTest(unittest.TestCase):
             self.assertEqual(body["questions"]["d0"]["type"], "noul")
             self.assertEqual(body["questions"]["d0"]["instructions"], QUESTION + "DRAFT")
             self.assertEqual(rows(d3_out / "judge.jsonl")[0]["score"], 0.5)
+            judge_cmd = next(
+                command for kind, command in d3.events
+                if kind == "start" and command[command.index("-m") + 1].endswith("D3-judge.gguf"))
+            self.assertEqual(judge_cmd[judge_cmd.index("-b") + 1], "8192")
+            self.assertEqual(judge_cmd[judge_cmd.index("-ub") + 1], "8192")
+            draft_cmd = next(
+                command for kind, command in d3.events
+                if kind == "start" and command[command.index("-m") + 1].endswith("a.gguf"))
+            self.assertNotIn("-b", draft_cmd)
+            self.assertNotIn("-ub", draft_cmd)
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -573,6 +599,8 @@ class DraftJudgeTest(unittest.TestCase):
             state = root / "state"
             draft = root / "draft.gguf"
             judge = root / "judge.gguf"
+            draft.write_bytes(b"gguf")
+            judge.write_bytes(b"gguf")
             answers = iter([
                 str(draft),
                 "cpu",
@@ -584,6 +612,7 @@ class DraftJudgeTest(unittest.TestCase):
                 "",
                 "Say hello",
                 "n",
+                "",
             ])
 
             def fake_input(prompt=""):
@@ -613,6 +642,216 @@ class DraftJudgeTest(unittest.TestCase):
             self.assertIn(str(runs[0]), text)
             self.assertEqual((runs[0] / "vanilla.txt").read_text(encoding="utf-8"), "VANILLA")
             self.assertIn("chosen\nBBB\n", (runs[0] / "report.txt").read_text(encoding="utf-8"))
+
+    def test_missing_model_file_stops_before_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = Runtime([])
+            code, _stdout, stderr = self.run_cli(runtime, [
+                "run", "--draft", str(root / "missing.gguf"),
+                "--judge", str(root / "also-missing.gguf"),
+                "--prompt", "hello", "--llama-server", "/fake/llama-server",
+                "--output", str(root / "out"),
+            ])
+            self.assertEqual(code, 2)
+            self.assertEqual(runtime.events, [])
+            self.assertIn("model file not found", stderr)
+            self.assertFalse((root / "out").exists())
+
+    def test_judge_that_exits_does_not_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            argv, out = self.command(
+                root, [f"{root / 'a.gguf'}:cpu"], f"{root / 'c.gguf'}:cpu",
+                drafts_n=4, schedule="together")
+            runtime = Runtime(["VANILLA"], die={"c.gguf"})
+            code, _stdout, stderr = self.run_cli(runtime, argv)
+            self.assertEqual(code, 1)
+            self.assertEqual(runtime.gens, [])
+            report = (out / "report.txt").read_text(encoding="utf-8")
+            self.assertIn("result: judge failed to load", report)
+            self.assertIn("llama-server exited (1)", report)
+            self.assertIn("judge failed to load", stderr)
+
+    def test_log_excerpt_keeps_the_server_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "server.log"
+            path.write_text(
+                "0.00.121 I srv  llama_server: initializing ...\n"
+                "0.00.124 E gguf_init_from_file: failed to open GGUF file\n"
+                "0.00.127 E srv  load_model: failed to load model\n",
+                encoding="utf-8")
+            excerpt = workflow.log_excerpt(path)
+            self.assertIn("failed to open GGUF file", excerpt)
+            self.assertIn("failed to load model", excerpt)
+            self.assertNotIn("initializing", excerpt)
+
+    def test_http_error_includes_the_server_message(self):
+        body = json.dumps({
+            "error": {"message": "input (870 tokens) is too large to process"},
+        }).encode()
+        exc = urllib.error.HTTPError(
+            "http://unit.test/v1/systemone", 500, "err", {}, io.BytesIO(body))
+        self.assertEqual(
+            workflow.error_text(exc),
+            "HTTP 500: input (870 tokens) is too large to process")
+
+    def test_short_name_matches_ignore_punctuation(self):
+        models = [
+            Path("Qwen3.5-0.8B-Q8_0.gguf"),
+            Path("Qwen3.5-4B-Q4_K_M.gguf"),
+            Path("Qwen3.5-4B-Q6_K.gguf"),
+            Path("d3-2b-Q8_0.gguf"),
+            Path("d3-2b-Q8_0-extra.gguf"),
+        ]
+        one = tui.match_models(models, "d3:2b")
+        self.assertEqual([path.name for _index, path in one], [
+            "d3-2b-Q8_0.gguf", "d3-2b-Q8_0-extra.gguf"])
+        exact = tui.match_models(models, "d3-2b-Q8_0.gguf")
+        self.assertEqual([path.name for _index, path in exact], ["d3-2b-Q8_0.gguf"])
+        small = tui.match_models(models, "0.8")
+        self.assertEqual([path.name for _index, path in small], ["Qwen3.5-0.8B-Q8_0.gguf"])
+        self.assertEqual(tui.strip_wrapping_quotes('"what is the meaning of life?"'),
+                         "what is the meaning of life?")
+        self.assertEqual(tui.split_device("d3:2b cpu"), ("d3:2b", "cpu"))
+        self.assertEqual(tui.split_device("4:gpu"), ("4", "gpu"))
+
+    def test_menu_short_name_sets_the_judge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = root / "state"
+            names = [
+                "Qwen3.5-0.8B-Q8_0.gguf",
+                "Qwen3.5-4B-Q4_K_M.gguf",
+                "d3-2b-Q8_0.gguf",
+            ]
+            models = []
+            for name in names:
+                path = root / name
+                path.write_bytes(b"gguf")
+                models.append(path.resolve())
+            answers = iter([
+                "0.8 cpu",
+                "",
+                "d3:2b",
+                "",
+                "1",
+                "rotate",
+                "",
+                '"what is the meaning of life?"',
+                "n",
+                "",
+            ])
+
+            def fake_input(prompt=""):
+                try:
+                    return next(answers)
+                except StopIteration as exc:
+                    raise AssertionError(prompt) from exc
+
+            runtime = Runtime(["VANILLA", "ONLY"], {"ONLY": 0.8})
+            stdout = io.StringIO()
+            with runtime, patch.dict(os.environ, {
+                "DRAFT_JUDGE_LLAMA_SERVER": "",
+                "XDG_STATE_HOME": str(state),
+            }), patch("sys.stdin.isatty", return_value=True), \
+                    patch("kilix_bench.draft_judge.tui.discover_models", return_value=models), \
+                    patch("builtins.input", fake_input), patch("sys.stdout", stdout):
+                code = cli.main([
+                    "tui", "--llama-server", "/fake/llama-server",
+                ])
+            self.assertEqual(code, 0)
+            runs = list((state / "draft-judge" / "runs").iterdir())
+            config = json.loads((runs[0] / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["draft_models"][0]["file"], "Qwen3.5-0.8B-Q8_0.gguf")
+            self.assertEqual(config["draft_models"][0]["device"], "cpu")
+            self.assertEqual(config["judge"]["file"], "d3-2b-Q8_0.gguf")
+            self.assertEqual(config["judge"]["device"], "gpu")
+            self.assertEqual(config["prompt"], "what is the meaning of life?")
+            self.assertIn("Matched", stdout.getvalue())
+            self.assertEqual([kind for kind, _url, _body in runtime.judges], ["systemone"])
+
+    def test_menu_can_go_back_and_change_one_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            names = ["a.gguf", "qwen-4b-q4.gguf", "qwen-4b-q6.gguf", "d3-judge.gguf"]
+            models = []
+            for name in names:
+                path = root / name
+                path.write_bytes(b"gguf")
+                models.append(path.resolve())
+            answers = iter([
+                "4b",
+                "2 cpu",
+                "1",
+                "b",
+                "b",
+                "3 gpu",
+                "",
+                "d3",
+                "",
+                "2",
+                "together",
+                "",
+                "Say hello",
+                "n",
+                "4",
+                "rotate",
+                "5",
+                "",
+                "",
+            ])
+
+            def fake_input(prompt=""):
+                try:
+                    return next(answers)
+                except StopIteration as exc:
+                    raise AssertionError(prompt) from exc
+
+            seen = {}
+
+            def fake_execute(config):
+                seen["config"] = config
+                return 0, root, "report\n"
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.dict(os.environ, {"DRAFT_JUDGE_LLAMA_SERVER": ""}), \
+                    patch("sys.stdin.isatty", return_value=True), \
+                    patch("kilix_bench.draft_judge.tui.discover_models", return_value=models), \
+                    patch("kilix_bench.draft_judge.tui.execute", fake_execute), \
+                    patch("builtins.input", fake_input), \
+                    patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+                code = cli.main(["tui", "--llama-server", "/fake/llama-server"])
+            self.assertEqual(code, 0)
+            text = stdout.getvalue()
+            self.assertIn("Several models match", text)
+            self.assertIn("Removed qwen-4b-q4.gguf.", text)
+            config = seen["config"]
+            self.assertEqual([spec.name for spec in config["draft_models"]], ["qwen-4b-q6.gguf"])
+            self.assertEqual(config["draft_models"][0].device, "gpu")
+            self.assertEqual(config["judge"].name, "d3-judge.gguf")
+            self.assertEqual(config["judge"].device, "gpu")
+            self.assertEqual(config["draft_count"], 2)
+            self.assertEqual(config["schedule"], "rotate")
+            self.assertEqual(config["prompt"], "Say hello")
+            self.assertFalse(config["code"])
+
+    def test_menu_quit_does_not_run(self):
+        answers = iter(["q"])
+
+        def fake_input(prompt=""):
+            return next(answers)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch("sys.stdin.isatty", return_value=True), \
+                patch("kilix_bench.draft_judge.tui.discover_models", return_value=[]), \
+                patch("kilix_bench.draft_judge.tui.execute") as execute, \
+                patch("builtins.input", fake_input), \
+                patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+            code = cli.main(["tui"])
+        self.assertEqual(code, 1)
+        self.assertIn("cancelled", stderr.getvalue())
+        execute.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -51,6 +51,8 @@ def run_parser():
 
 
 def show(code, directory, report):
+    if directory is None:
+        return code
     sys.stdout.write(report)
     if not report.endswith("\n"):
         sys.stdout.write("\n")

@@ -140,6 +140,17 @@ The default is four drafts, GPU, and one model loaded at a time. Results go
 under `${XDG_STATE_HOME:-~/.local/state}/draft-judge/runs/<utc-stamp>`.
 `DRAFT_JUDGE_LLAMA_SERVER` selects the llama-server binary.
 
+A missing model file stops the run before a server starts. While a run is
+going, the terminal shows each draft as it is written and each score as it
+comes back. The written report leads with the result, then the scores, then
+the vanilla reply and the chosen reply.
+
+In the menu, a number, a piece of a file name, or a path selects a model.
+`d3:2b` matches `d3-2b` when that is the only match. Add `cpu` or `gpu` on
+the same line to set the device. A blank line finishes the draft list. `b`
+goes back, `l` lists the models, and the ready screen can change any answer
+before the run starts.
+
 ```sh
 cd /home/pleb/gpu_terminal/worktrees/024-draft-judge
 PYTHONPATH=src python3 -B -m unittest tests.test_draft_judge -v
