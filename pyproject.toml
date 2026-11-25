@@ -15,6 +15,7 @@ authors = [{name = "itsmygithubacct"}]
 kilix-bench = "kilix_bench.__main__:main"
 kilix-yesno = "kilix_bench.yesno.cli:main"
 kilix-yesno-tui = "kilix_bench.yesno.cli:tui_main"
+draft-judge = "kilix_bench.draft_judge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

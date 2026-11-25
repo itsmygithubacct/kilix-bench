@@ -121,6 +121,30 @@ else. The JSON record has the desktop version and revision, the Python version,
 and the machine type. It does not record local paths. The text suite uses the
 `kilix-text` name.
 
+## draft-judge
+
+`draft-judge` writes several replies from one or more GGUF draft models, scores
+each reply with a judge model, and keeps the highest score. Ties keep the
+earliest draft. The first draft model also writes one greedy reply, and that
+reply is saved beside the judged winner. `draft-judge` opens the terminal
+menu. `draft-judge run` is the same workflow when stdin is not a terminal.
+
+```sh
+draft-judge run --draft FILE[:cpu|gpu] [--draft FILE[:cpu|gpu] ...] \
+  --judge FILE[:cpu|gpu] [--drafts N] [--schedule together|rotate] \
+  [--prompt TEXT | --prompt-file PATH] [--code] [--output DIR] [--llama-server PATH]
+draft-judge tui
+```
+
+The default is four drafts, GPU, and one model loaded at a time. Results go
+under `${XDG_STATE_HOME:-~/.local/state}/draft-judge/runs/<utc-stamp>`.
+`DRAFT_JUDGE_LLAMA_SERVER` selects the llama-server binary.
+
+```sh
+cd /home/pleb/gpu_terminal/worktrees/024-draft-judge
+PYTHONPATH=src python3 -B -m unittest tests.test_draft_judge -v
+```
+
 ## OneBit
 
 How much intelligence fits in a one-bit answer. Every item is a yes/no
