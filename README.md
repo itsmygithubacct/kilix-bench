@@ -126,14 +126,25 @@ and the machine type. It does not record local paths. The text suite uses the
 `draft-judge` writes several replies from one or more GGUF draft models, scores
 each reply with a judge model, and keeps the highest score. Ties keep the
 earliest draft. The first draft model also writes one greedy reply, and that
-reply is saved beside the judged winner. `draft-judge` opens the terminal
-menu. `draft-judge run` is the same workflow when stdin is not a terminal.
+reply is saved beside the judged winner.
+
+With no arguments, `draft-judge` opens a monitor in the Kilix pane. The picture
+follows the puzzllm bench: a full-canvas panel, a dock of buttons, the draft
+list, the judge, the scores, the vanilla reply, and the chosen reply. Glyphs
+come from neuronte-sdk when its library and a weight file open, and the frame
+is placed with the Kilix frame presenter. `DRAFT_JUDGE_RASTER=1` keeps the
+built-in glyphs. `DRAFT_JUDGE_NEURONTE_SDK` and `DRAFT_JUDGE_NEURONTE_WEIGHTS`
+select that library and weight file.
+
+`draft-judge --cli` is the text menu. `draft-judge --cli run` is the same
+workflow without a menu.
 
 ```sh
-draft-judge run --draft FILE[:cpu|gpu] [--draft FILE[:cpu|gpu] ...] \
+draft-judge
+draft-judge --cli
+draft-judge --cli run --draft FILE[:cpu|gpu] [--draft FILE[:cpu|gpu] ...] \
   --judge FILE[:cpu|gpu] [--drafts N] [--schedule together|rotate] \
   [--prompt TEXT | --prompt-file PATH] [--code] [--output DIR] [--llama-server PATH]
-draft-judge tui
 ```
 
 The default is four drafts, GPU, and one model loaded at a time. Results go
@@ -141,11 +152,16 @@ under `${XDG_STATE_HOME:-~/.local/state}/draft-judge/runs/<utc-stamp>`.
 `DRAFT_JUDGE_LLAMA_SERVER` selects the llama-server binary.
 
 A missing model file stops the run before a server starts. While a run is
-going, the terminal shows each draft as it is written and each score as it
+going, the monitor shows each draft as it is written and each score as it
 comes back. The written report leads with the result, then the scores, then
 the vanilla reply and the chosen reply.
 
-In the menu, a number, a piece of a file name, or a path selects a model.
+In the monitor, D, J, and P open the drafts, the judge, and the prompt. R
+starts the run. A fragment such as `d3:2b` selects a model, and `cpu` or
+`gpu` on that line sets the device. Esc goes back. Quit waits until the run
+has finished.
+
+In the text menu, a number, a piece of a file name, or a path selects a model.
 `d3:2b` matches `d3-2b` when that is the only match. Add `cpu` or `gpu` on
 the same line to set the device. A blank line finishes the draft list. `b`
 goes back, `l` lists the models, and the ready screen can change any answer

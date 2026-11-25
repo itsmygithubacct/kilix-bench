@@ -212,13 +212,33 @@ def noul_score(payload, key):
     return float(payload["answers"][key]["noul"])
 
 
+_progress = threading.local()
+
+
+def bind_listener(fn):
+    """Send notes, warnings, and run events to fn instead of the terminal."""
+    _progress.fn = fn
+
+
+def emit(kind, **fields):
+    fn = getattr(_progress, "fn", None)
+    if fn is not None:
+        fn({"kind": kind, **fields})
+
+
 def warn(message):
+    if getattr(_progress, "fn", None) is not None:
+        emit("warn", text=message)
+        return
     sys.stderr.write(f"draft-judge: {message}\n")
     sys.stderr.flush()
 
 
 def note(message):
     """Progress for an interactive run. Captured output stays a report only."""
+    if getattr(_progress, "fn", None) is not None:
+        emit("note", text=message)
+        return
     if sys.stderr.isatty():
         warn(message)
 
@@ -694,6 +714,8 @@ def execute(config):
     drafts, judges = [], []
     previous = os.umask(0o077)
     try:
+        bind_listener(config.get("on_event"))
+        emit("run", directory=str(directory))
         _write_json(directory / "config.json", {
             "draft_models": [spec.to_json() for spec in config["draft_models"]],
             "judge": config["judge"].to_json(),
@@ -712,6 +734,7 @@ def execute(config):
                 judge_server = fleet.live.get(config["judge"].key)
             if judge_server is not None and judge_server.error:
                 warn(f"judge failed to load: {judge_server.error}")
+                emit("load_failure", text=judge_server.error)
                 report = render_load_failure(config["judge"], judge_server.error)
                 (directory / "report.txt").write_text(report, encoding="utf-8")
                 _write_json(directory / "timing.json", timing)
@@ -725,6 +748,9 @@ def execute(config):
         timing["vanilla"] = round(time.perf_counter() - mark, 3)
         (directory / "vanilla.txt").write_text(vanilla.get("text") or "", encoding="utf-8")
         _write_json(directory / "vanilla.json", vanilla)
+        emit("vanilla", text=vanilla.get("text") or "", ok=bool(vanilla.get("ok")),
+             error=vanilla.get("error") or "", tokens=vanilla.get("tokens"),
+             seconds=vanilla.get("seconds") or 0)
         if vanilla["ok"]:
             note(f"vanilla  {vanilla['tokens']} tokens  {vanilla['seconds']}s")
         else:
@@ -753,6 +779,8 @@ def execute(config):
             }
             drafts.append(row)
             _append(drafts_path, row)
+            emit("draft", index=index, model=spec.name, text=generated["text"] or "",
+                 ok=bool(generated["ok"]), error=generated["error"] or "")
             if generated["ok"]:
                 note(
                     f"draft {index + 1} of {count}  {generated['tokens']} tokens  "
@@ -773,6 +801,8 @@ def execute(config):
             judged = one_judge(judge_server, config["prompt"], draft["text"], draft["index"])
             judges.append(judged)
             _append(judge_path, judged)
+            emit("judge", index=judged["index"], score=judged["score"],
+                 ok=bool(judged["ok"]), error=judged["error"] or "")
             if judged["ok"]:
                 note(f"draft {draft['index']}  score {judged['score']:.3f}  {judged['seconds']}s")
             else:
@@ -782,15 +812,18 @@ def execute(config):
         winner = choose_winner(drafts, judges)
         if winner is None:
             note("result: no reply could be judged")
+            emit("result", ok=False, index=None, score=None)
         else:
             note(
                 f"result: draft {winner[1]['index']}  "
                 f"score {winner[0]['score']:.3f}")
+            emit("result", ok=True, index=winner[1]["index"], score=winner[0]["score"])
         report = render_report(vanilla, drafts, judges, winner)
         (directory / "report.txt").write_text(report, encoding="utf-8")
         _write_json(directory / "timing.json", timing)
         return (0 if winner else 1), directory, report
     finally:
+        bind_listener(None)
         sampler.close()
         fleet.stop_all()
         os.umask(previous)

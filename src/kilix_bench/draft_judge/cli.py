@@ -14,14 +14,20 @@ SEARCH = (
 def parser():
     tool = argparse.ArgumentParser(
         prog="draft-judge",
-        description="Draft replies from GGUF models and keep the highest score. " + SEARCH,
+        description=(
+            "Draft replies from GGUF models and keep the highest score. "
+            "With no arguments this opens a monitor in the terminal. " + SEARCH
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "examples:\n"
-            "  draft-judge run --draft model.gguf[:cpu|gpu] --judge judge.gguf --prompt TEXT\n"
-            "  draft-judge tui\n"
+            "  draft-judge [--model-dir DIR] [--output DIR] [--gpu-device NAME]\n"
+            "  draft-judge --cli\n"
+            "  draft-judge --cli run --draft model.gguf[:cpu|gpu] "
+            "--judge judge.gguf --prompt TEXT\n"
             "\n"
-            "The menu needs a terminal. Use run otherwise.\n"
+            "The monitor needs a terminal. --cli is the text menu, and\n"
+            "--cli run is the same workflow without the menu.\n"
             "Defaults: four drafts, gpu, and schedule rotate."
         ),
     )
@@ -98,8 +104,8 @@ def cmd_run(argv):
     return show(code, directory, report)
 
 
-def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
+def text_main(argv):
+    """The text menu and the run command. Reach them with --cli."""
     if argv in (["-h"], ["--help"]):
         parser().print_help()
         return 0
@@ -110,7 +116,7 @@ def main(argv=None):
             tui_parser().print_help()
             return 0
         if not sys.stdin.isatty():
-            sys.stderr.write("draft-judge: the menu needs a terminal; use the run command\n")
+            sys.stderr.write("draft-judge: the menu needs a terminal; use --cli run\n")
             return 2
         from kilix_bench.draft_judge.tui import run_tui
         return run_tui(rest)
@@ -118,3 +124,17 @@ def main(argv=None):
         parser().print_help()
         return 2
     return cmd_run(argv[1:])
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["--cli"]:
+        return text_main(argv[1:])
+    if argv in (["-h"], ["--help"]):
+        parser().print_help()
+        return 0
+    if argv and argv[0] in ("run", "tui"):
+        sys.stderr.write("draft-judge: the text menu and run command are behind --cli\n")
+        return 2
+    from kilix_bench.draft_judge.display import run_monitor
+    return run_monitor(argv)

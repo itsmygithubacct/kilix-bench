@@ -248,7 +248,7 @@ class DraftJudgeTest(unittest.TestCase):
         out = Path(tmp) / "out"
         for item in [*drafts, judge]:
             materialize(item)
-        argv = ["run", "--judge", judge, "--output", str(out), "--llama-server", "/fake/llama-server"]
+        argv = ["--cli", "run", "--judge", judge, "--output", str(out), "--llama-server", "/fake/llama-server"]
         for item in drafts:
             argv.extend(["--draft", item])
         if prompt_file is None:
@@ -299,28 +299,36 @@ class DraftJudgeTest(unittest.TestCase):
             self.assertEqual(cli.main(["--help"]), 0)
         text = stdout.getvalue()
         self.assertIn("DRAFT_JUDGE_LLAMA_SERVER", text)
+        self.assertIn("--cli", text)
+        self.assertIn("monitor", text.casefold())
         lowered = text.casefold()
         self.assertNotIn("localhost", lowered)
         self.assertNotIn("127.0.0.1", text)
         self.assertNotIn("/home/", text)
 
     def test_menu_requires_a_terminal(self):
-        with patch("sys.stdin.isatty", return_value=False), patch("sys.stderr", io.StringIO()):
+        stderr = io.StringIO()
+        with patch("sys.stdin.isatty", return_value=False), patch("sys.stderr", stderr):
             self.assertEqual(cli.main([]), 2)
             self.assertEqual(cli.main(["tui"]), 2)
+            self.assertEqual(cli.main(["--cli"]), 2)
+            self.assertEqual(cli.main(["--cli", "tui"]), 2)
+        text = stderr.getvalue()
+        self.assertIn("--cli", text)
+        self.assertIn("monitor", text)
 
     def test_prompt_is_required(self):
         with patch("sys.stderr", io.StringIO()):
             self.assertEqual(cli.main([
-                "run", "--draft", "a.gguf:cpu", "--judge", "b.gguf:cpu",
+                "--cli", "run", "--draft", "a.gguf:cpu", "--judge", "b.gguf:cpu",
                 "--llama-server", "/fake/llama-server",
             ]), 2)
             self.assertEqual(cli.main([
-                "run", "--draft", "a.gguf:cpu", "--judge", "b.gguf:cpu",
+                "--cli", "run", "--draft", "a.gguf:cpu", "--judge", "b.gguf:cpu",
                 "--prompt", "x", "--prompt-file", "y", "--llama-server", "/fake/llama-server",
             ]), 2)
             self.assertEqual(cli.main([
-                "run", "--draft", "a.gguf:cpu", "--judge", "b.gguf:cpu",
+                "--cli", "run", "--draft", "a.gguf:cpu", "--judge", "b.gguf:cpu",
                 "--prompt", "x", "--drafts", "0", "--llama-server", "/fake/llama-server",
             ]), 2)
 
@@ -629,7 +637,7 @@ class DraftJudgeTest(unittest.TestCase):
             }), patch("sys.stdin.isatty", return_value=True), \
                     patch("builtins.input", fake_input), patch("sys.stdout", stdout):
                 code = cli.main([
-                    "tui", "--model-dir", str(root / "empty"),
+                    "--cli", "tui", "--model-dir", str(root / "empty"),
                     "--llama-server", "/fake/llama-server",
                 ])
             self.assertEqual(code, 0)
@@ -648,7 +656,7 @@ class DraftJudgeTest(unittest.TestCase):
             root = Path(tmp)
             runtime = Runtime([])
             code, _stdout, stderr = self.run_cli(runtime, [
-                "run", "--draft", str(root / "missing.gguf"),
+                "--cli", "run", "--draft", str(root / "missing.gguf"),
                 "--judge", str(root / "also-missing.gguf"),
                 "--prompt", "hello", "--llama-server", "/fake/llama-server",
                 "--output", str(root / "out"),
@@ -758,7 +766,7 @@ class DraftJudgeTest(unittest.TestCase):
                     patch("kilix_bench.draft_judge.tui.discover_models", return_value=models), \
                     patch("builtins.input", fake_input), patch("sys.stdout", stdout):
                 code = cli.main([
-                    "tui", "--llama-server", "/fake/llama-server",
+                    "--cli", "tui", "--llama-server", "/fake/llama-server",
                 ])
             self.assertEqual(code, 0)
             runs = list((state / "draft-judge" / "runs").iterdir())
@@ -821,7 +829,7 @@ class DraftJudgeTest(unittest.TestCase):
                     patch("kilix_bench.draft_judge.tui.execute", fake_execute), \
                     patch("builtins.input", fake_input), \
                     patch("sys.stdout", stdout), patch("sys.stderr", stderr):
-                code = cli.main(["tui", "--llama-server", "/fake/llama-server"])
+                code = cli.main(["--cli", "tui", "--llama-server", "/fake/llama-server"])
             self.assertEqual(code, 0)
             text = stdout.getvalue()
             self.assertIn("Several models match", text)
@@ -848,10 +856,169 @@ class DraftJudgeTest(unittest.TestCase):
                 patch("kilix_bench.draft_judge.tui.execute") as execute, \
                 patch("builtins.input", fake_input), \
                 patch("sys.stdout", stdout), patch("sys.stderr", stderr):
-            code = cli.main(["tui"])
+            code = cli.main(["--cli", "tui"])
         self.assertEqual(code, 1)
         self.assertIn("cancelled", stderr.getvalue())
         execute.assert_not_called()
+
+    def test_run_without_cli_does_not_start(self):
+        stderr = io.StringIO()
+        with patch("kilix_bench.draft_judge.workflow.execute") as execute, \
+                patch("sys.stderr", stderr):
+            code = cli.main([
+                "run", "--draft", "a.gguf", "--judge", "b.gguf", "--prompt", "x",
+            ])
+        self.assertEqual(code, 2)
+        self.assertIn("--cli", stderr.getvalue())
+        execute.assert_not_called()
+
+    def test_listener_takes_notes_off_the_terminal(self):
+        events = []
+        workflow.bind_listener(events.append)
+        stderr = io.StringIO()
+        try:
+            with patch("sys.stderr", stderr):
+                workflow.note("hello")
+                workflow.warn("bad")
+        finally:
+            workflow.bind_listener(None)
+        self.assertEqual(events, [
+            {"kind": "note", "text": "hello"},
+            {"kind": "warn", "text": "bad"},
+        ])
+        self.assertEqual(stderr.getvalue(), "")
+
+
+class MonitorTest(unittest.TestCase):
+    def test_canvas_uses_the_bench_colors(self):
+        from kilix_bench.draft_judge.display import AQUA, BG, BitmapFace, GOLD, Monitor
+        face = BitmapFace()
+        monitor = Monitor([])
+        canvas = monitor.render(face)
+        self.assertEqual(canvas.pixel(0, 0) & 0xFFFFFF, BG)
+        self.assertGreater(canvas.count_rgb(GOLD), 0)
+        self.assertGreater(canvas.count_rgb(AQUA), 0)
+        self.assertEqual(len(canvas.rgb()), canvas.w * canvas.h * 3)
+        self.assertIn("start", [hit[4] for hit in canvas.hits])
+        monitor.action("start")
+        self.assertIn("draft", monitor.notice.casefold())
+        monitor.key("j")
+        self.assertEqual(monitor.page, "pick")
+
+    def test_short_name_sets_the_judge_and_strips_quotes(self):
+        from kilix_bench.draft_judge.display import Monitor
+        models = [
+            Path("Qwen3.5-0.8B-Q8_0.gguf"),
+            Path("d3-2b-Q8_0.gguf"),
+        ]
+        monitor = Monitor(models)
+        monitor.key("j")
+        for ch in "d3:2b":
+            monitor.key(ch)
+        monitor.key("enter")
+        self.assertEqual(monitor.page, "setup")
+        self.assertEqual(monitor.judge.name, "d3-2b-Q8_0.gguf")
+        self.assertEqual(monitor.judge.device, "gpu")
+        monitor.key("p")
+        for ch in '"hello"':
+            monitor.key(ch)
+        monitor.key("enter")
+        self.assertEqual(monitor.prompt, "hello")
+
+    def test_scores_keep_the_earliest_tie_and_the_higher_score(self):
+        from kilix_bench.draft_judge.display import Monitor
+        monitor = Monitor([])
+        monitor.count = 2
+        monitor.apply({
+            "kind": "draft", "index": 0, "model": "a.gguf",
+            "text": "AAA", "ok": True, "error": "",
+        })
+        monitor.apply({
+            "kind": "draft", "index": 1, "model": "a.gguf",
+            "text": "BBB", "ok": True, "error": "",
+        })
+        monitor.apply({"kind": "judge", "index": 0, "score": 0.5, "ok": True, "error": ""})
+        monitor.apply({"kind": "judge", "index": 1, "score": 0.5, "ok": True, "error": ""})
+        self.assertEqual(monitor.winner_index(), 0)
+        self.assertEqual(monitor.chosen_text(), "AAA")
+        monitor.apply({"kind": "judge", "index": 1, "score": 0.9, "ok": True, "error": ""})
+        self.assertEqual(monitor.winner_index(), 1)
+        self.assertEqual(monitor.chosen_text(), "BBB")
+        monitor.page = "watch"
+        canvas = monitor.render(monitor_face())
+        score_hits = [hit for hit in canvas.hits if str(hit[4]).startswith("score-")]
+        self.assertEqual([hit[4] for hit in score_hits], ["score-0", "score-1"])
+        left, top, _w, _h, name = score_hits[1]
+        self.assertEqual(canvas.hit_at(left + 4, top + 4), name)
+        self.assertGreater(canvas.count_rgb(0x70DFD3), 0)
+
+    def test_start_runs_the_workflow_and_shows_the_reply(self):
+        from kilix_bench.draft_judge.display import Monitor
+        monitor = Monitor([])
+        monitor.drafts = [workflow.ModelSpec("/tmp/draft.gguf", "gpu")]
+        monitor.judge = workflow.ModelSpec("/tmp/judge.gguf", "cpu")
+        monitor.prompt = "Say hello"
+        monitor.count = 1
+        seen = {}
+
+        def fake(config):
+            seen["config"] = config
+            config["on_event"]({
+                "kind": "draft", "index": 0, "model": "draft.gguf",
+                "text": "HELLO", "ok": True, "error": "",
+            })
+            config["on_event"]({
+                "kind": "judge", "index": 0, "score": 0.5, "ok": True, "error": "",
+            })
+            return 0, Path("/tmp/draft-judge-run"), "result: draft 0\n"
+
+        with patch("kilix_bench.draft_judge.workflow.execute", fake):
+            monitor.start()
+            monitor.thread.join(timeout=5)
+        self.assertFalse(monitor.thread.is_alive())
+        monitor.poll()
+        self.assertEqual(monitor.phase, "Complete")
+        self.assertEqual(monitor.chosen_text(), "HELLO")
+        self.assertEqual(seen["config"]["prompt"], "Say hello")
+        self.assertEqual(seen["config"]["judge"].device, "cpu")
+        self.assertEqual(monitor.exit_code, 0)
+
+    def test_mouse_and_keys_decode(self):
+        from kilix_bench.draft_judge.pane import cell_to_pixel, decode
+        events, rest = decode(b"a\x1b[A\r\x1b[<0;3;4M")
+        self.assertEqual(rest, b"")
+        self.assertEqual(events, [
+            ("key", "a"), ("key", "up"), ("key", "enter"), ("click", 3, 4),
+        ])
+        _events, rest = decode(b"\x1b[")
+        self.assertEqual(rest, b"\x1b[")
+        x, y = cell_to_pixel(1, 1, 80, 24, 1280, 720)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+
+    def test_presenter_comes_from_kilix(self):
+        from kilix_bench.draft_judge.pane import presenter_class
+        cls = presenter_class()
+        self.assertTrue(callable(getattr(cls, "present", None)))
+
+    def test_neuronte_face_draws_when_the_sdk_opens(self):
+        from kilix_bench.draft_judge.display import AQUA, Canvas, NeuronteFace
+        try:
+            face = NeuronteFace.open()
+        except Exception as exc:
+            self.skipTest(f"neuronte sdk is not available: {exc}")
+        try:
+            canvas = Canvas(64, 32, face)
+            canvas.fill(0, 0, 64, 32, 0x101821)
+            face.draw(canvas, 0, 0, "Ag", AQUA)
+            self.assertGreater(canvas.ink(), 10)
+        finally:
+            face.close()
+
+
+def monitor_face():
+    from kilix_bench.draft_judge.display import BitmapFace
+    return BitmapFace()
 
 
 if __name__ == "__main__":
